@@ -121,8 +121,30 @@
           nativeBuildInputs = [
             pkgs.pkg-config
             pkgs.makeWrapper
+            pkgs.copyDesktopItems
           ];
           buildInputs = [ pkgs.openssl ];
+          desktopItems = [
+            (pkgs.makeDesktopItem {
+              name = cargoToml.package.name;
+              desktopName = "Pagecut";
+              genericName = "Image to PDF";
+              comment = "Split images into printable PDF pages";
+              exec = "${cargoToml.package.name} %f";
+              icon = "image-x-generic";
+              terminal = false;
+              categories = [ "Graphics" ];
+              mimeTypes = [
+                "image/png"
+                "image/jpeg"
+              ];
+              keywords = [
+                "Image"
+                "PDF"
+                "Print"
+              ];
+            })
+          ];
           postFixup = ''
             wrapProgram "$out/bin/${cargoToml.package.name}" \
               --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath runtimeLibraries}" \
