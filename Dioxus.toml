@@ -1,0 +1,6 @@
+[bundle]
+identifier = "dev.justsimplykyle.longshot"
+publisher = "justsimplykyle"
+
+[application]
+default_platform = "linux"

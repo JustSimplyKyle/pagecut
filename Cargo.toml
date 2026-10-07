@@ -1,0 +1,26 @@
+[package]
+name = "longshot"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+vse-ui = { path = "../videosubextract/crates/vse-ui" }
+iced = { path = "../iced-dioxus", default-features = false }
+# Enable codecs for Iced's path-backed image handles.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+apply = "0.3.0"
+# Match VideoSubExtract's working Linux portal backend.
+rfd = "=0.16.0"
+eyre = "0.6.14"
+pdf-writer = "0.15"
+flate2 = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["rt"] }
+
+[features]
+debug = ["iced/debug"]
+hot-patch = ["iced/hot"]
+
+[profile.samply]
+inherits = "release"
+debug = true
