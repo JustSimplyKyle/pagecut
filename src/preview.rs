@@ -1,17 +1,15 @@
 use vse_ui::iced::{self, Color, Fill, Point, Rectangle, Size};
-use vse_ui::{Apply, Element, widget};
+use vse_ui::{Apply, Element, theme, widget};
 
-use super::{
-    Message,
-    slices::{SliceEditor, a4_height},
-};
+use super::{Message, metrics, slices::SliceEditor};
+
+#[cfg(test)]
+use super::slices::a4_height;
 
 const BEYOND_LIMIT_PX: f32 = 100.0;
-const LABEL_HEIGHT_PX: f32 = 34.0;
 const SCROLLBAR_SPACE_PX: f32 = 16.0;
 const RULE_HIT_PX: f32 = 10.0;
 const SCROLL_ID: &str = "image-preview";
-const RULE_COLOR: Color = Color::from_rgb(1.0, 0.3, 0.0);
 
 pub fn scroll_to(start: u32, scale: f32) -> iced::Task<Message> {
     widget::operation::scroll_to(
@@ -27,13 +25,17 @@ pub fn scroll_to(start: u32, scale: f32) -> iced::Task<Message> {
 pub fn image<'a>(
     allocation: &'a widget::image::Allocation,
     slices: &'a SliceEditor,
+    zoom: f32,
+    fit_width: bool,
 ) -> Element<'a, Message> {
     let region = slices
         .current()
         .expect("the picker requires a current page");
     widget::responsive(move |available| {
-        let geometry = PreviewGeometry::fit(region, available);
-        let segments = PreviewSegments::new(region, &geometry);
+        let geometry =
+            PreviewGeometry::configured(region, available, slices.page_height(), fit_width)
+                .zoomed(zoom);
+        let segments = PreviewSegments::configured(region, &geometry, slices.page_height());
         let prefix = segments.prefix.map(|(region, size)| {
             let image = segment(allocation, region, size);
             let overlay =
@@ -48,44 +50,28 @@ pub fn image<'a>(
             scale: geometry.scale,
             guide_y: geometry.local_y(slices.draft()),
             guide_source: slices.draft(),
-            tint_height: segments.page_size.height,
+            limit_y: segments.page_size.height,
         })
         .width(segments.page_size.width)
         .height(segments.page_size.height);
-        let page = widget::stack![page, overlay];
-        let label = if segments.remainder.is_some() {
-            "A4 limit · click to place rule"
-        } else {
-            "Image end · click to place rule"
-        };
-        let label = widget::text(label)
-            .size(12)
-            .color(Color::WHITE)
-            .apply(widget::container)
-            .padding([0, 10])
-            .width(segments.page_size.width)
-            .height(LABEL_HEIGHT_PX)
-            .align_y(iced::alignment::Vertical::Center)
-            .style(|_| widget::container::Style {
-                background: Some(Color::from_rgb(0.05, 0.12, 0.16).into()),
-                border: iced::Border {
-                    color: RULE_COLOR,
-                    width: 1.0,
-                    ..iced::Border::default()
-                },
-                ..widget::container::Style::default()
-            });
+        let hint = cut_hint(
+            slices.cut_label(),
+            geometry.rule_bounds(slices.draft(), segments.page_size.height),
+        );
+        let page = widget::stack![page, overlay, hint];
         let remainder = segments
             .remainder
             .map(|(region, size)| segment(allocation, region, size));
 
-        widget::column![prefix, page, label, remainder]
+        widget::column![prefix, page, remainder]
             .apply(widget::container)
             .center_x(Fill)
             .apply(widget::scrollable)
             .id(SCROLL_ID)
             .width(Fill)
             .height(Fill)
+            .apply(widget::container)
+            .style(theme::container::secondary)
     })
     .into()
 }
@@ -98,14 +84,33 @@ pub fn zoom<'a>(
     widget::responsive(move |available| {
         let zoom = ZoomGeometry::new(allocation.size(), cut, available);
         let image = segment(allocation, zoom.region, zoom.size);
-        let rule = widget::canvas(ZoomRule { y: zoom.rule_y })
-            .width(zoom.size.width)
-            .height(zoom.size.height);
+        let rule = widget::canvas(ZoomRule {
+            y: zoom.rule_y,
+            source: zoom.region,
+            scale: zoom.scale,
+            cut,
+        })
+        .width(zoom.size.width)
+        .height(zoom.size.height);
         widget::stack![image, rule]
             .apply(widget::container)
             .center(Fill)
     })
     .into()
+}
+
+fn cut_hint(label: String, bounds: Rectangle) -> Element<'static, Message> {
+    let target = widget::space()
+        .width(bounds.width)
+        .height(bounds.height)
+        .apply(|target| {
+            widget::tooltip(
+                target,
+                widget::text::caption(label),
+                widget::tooltip::Position::Top,
+            )
+        });
+    widget::column![widget::space().height(bounds.y), target].into()
 }
 
 fn segment(
@@ -129,19 +134,50 @@ struct PreviewGeometry {
 }
 
 impl PreviewGeometry {
+    #[cfg(test)]
     fn fit(source: Rectangle<u32>, available: Size) -> Self {
+        Self::configured(source, available, a4_height(source.width), false)
+    }
+    fn configured(
+        source: Rectangle<u32>,
+        available: Size,
+        page_height: u32,
+        fit_width: bool,
+    ) -> Self {
         let source_width = source.width.max(1) as f32;
-        let source_page_height = a4_height(source.width) as f32;
+        let source_page_height = page_height as f32;
         let width = (available.width - SCROLLBAR_SPACE_PX).max(1.0);
-        let height = (available.height - BEYOND_LIMIT_PX - LABEL_HEIGHT_PX).max(1.0);
-        let scale = (width / source_width)
-            .min(height / source_page_height)
-            .min(1.0);
+        let height = (available.height - BEYOND_LIMIT_PX).max(1.0);
+        let scale = if fit_width {
+            width / source_width
+        } else {
+            (width / source_width)
+                .min(height / source_page_height)
+                .min(1.0)
+        };
         Self {
             width: source_width * scale,
             page_height: source_page_height * scale,
             scale,
             start: source.y,
+        }
+    }
+
+    fn zoomed(mut self, zoom: f32) -> Self {
+        self.width *= zoom;
+        self.page_height *= zoom;
+        self.scale *= zoom;
+        self
+    }
+
+    fn rule_bounds(&self, source_y: u32, page_height: f32) -> Rectangle {
+        let height = (RULE_HIT_PX * 2.0).min(page_height);
+        let y = (self.local_y(source_y) - RULE_HIT_PX).clamp(0.0, page_height - height);
+        Rectangle {
+            x: 0.0,
+            y,
+            width: self.width,
+            height,
         }
     }
 
@@ -158,8 +194,12 @@ struct PreviewSegments {
 }
 
 impl PreviewSegments {
+    #[cfg(test)]
     fn new(region: Rectangle<u32>, geometry: &PreviewGeometry) -> Self {
-        let page_height = a4_height(region.width).min(region.height);
+        Self::configured(region, geometry, a4_height(region.width))
+    }
+    fn configured(region: Rectangle<u32>, geometry: &PreviewGeometry, page_height: u32) -> Self {
+        let page_height = page_height.min(region.height);
         let page = Rectangle {
             height: page_height,
             ..region
@@ -202,6 +242,7 @@ struct ZoomGeometry {
     region: Rectangle<u32>,
     size: Size,
     rule_y: f32,
+    scale: f32,
 }
 
 impl ZoomGeometry {
@@ -223,6 +264,7 @@ impl ZoomGeometry {
             },
             size: Size::new(width as f32 * scale, height as f32 * scale),
             rule_y: cut.saturating_sub(y) as f32 * scale,
+            scale,
         }
     }
 }
@@ -238,7 +280,7 @@ struct GuideOverlay {
     scale: f32,
     guide_y: f32,
     guide_source: u32,
-    tint_height: f32,
+    limit_y: f32,
 }
 
 impl GuideOverlay {
@@ -322,17 +364,34 @@ impl widget::canvas::Program<Message> for GuideOverlay {
         &self,
         _state: &Self::State,
         renderer: &iced::Renderer,
-        _theme: &vse_ui::Theme,
+        app_theme: &vse_ui::Theme,
         bounds: Rectangle,
         _cursor: iced::mouse::Cursor,
     ) -> Vec<widget::canvas::Geometry> {
         let mut frame = widget::canvas::Frame::new(renderer, bounds.size());
-        frame.fill_rectangle(
-            Point::ORIGIN,
-            Size::new(bounds.width, self.tint_height),
-            Color::from_rgba(0.0, 0.65, 0.85, 0.16),
+        use widget::canvas::{LineDash, Path, Stroke, Text};
+        let limit_y = (self.limit_y - 1.0).max(0.0);
+        frame.stroke(
+            &Path::line(Point::new(0.0, limit_y), Point::new(bounds.width, limit_y)),
+            Stroke {
+                line_dash: LineDash {
+                    segments: &metrics::LIMIT_DASH,
+                    offset: 0,
+                },
+                ..Stroke::default().with_color(app_theme.palette().secondary.base.color)
+            },
         );
-        draw_rule(&mut frame, self.guide_y, RULE_COLOR, true);
+        frame.fill_text(Text {
+            content: "Page limit".into(),
+            position: Point::new(
+                theme::spacing().space_xxs,
+                limit_y - theme::spacing().space_xxs,
+            ),
+            align_y: iced::alignment::Vertical::Bottom,
+            color: app_theme.palette().secondary.base.color,
+            ..Default::default()
+        });
+        draw_rule(&mut frame, self.guide_y, app_theme.seed().primary, true);
         vec![frame.into_geometry()]
     }
 }
@@ -401,13 +460,13 @@ impl widget::canvas::Program<Message> for HistoryRules {
         &self,
         _state: &Self::State,
         renderer: &iced::Renderer,
-        _theme: &vse_ui::Theme,
+        app_theme: &vse_ui::Theme,
         bounds: Rectangle,
         _cursor: iced::mouse::Cursor,
     ) -> Vec<widget::canvas::Geometry> {
         let mut frame = widget::canvas::Frame::new(renderer, bounds.size());
         for (_, y) in &self.rules {
-            draw_rule(&mut frame, *y, Color::from_rgb(0.0, 0.65, 0.85), false);
+            draw_rule(&mut frame, *y, app_theme.seed().primary, false);
         }
         vec![frame.into_geometry()]
     }
@@ -415,14 +474,48 @@ impl widget::canvas::Program<Message> for HistoryRules {
 
 struct ZoomRule {
     y: f32,
+    source: Rectangle<u32>,
+    scale: f32,
+    cut: u32,
+}
+impl ZoomRule {
+    fn overlay(&self) -> GuideOverlay {
+        GuideOverlay {
+            source: self.source,
+            scale: self.scale,
+            guide_y: self.y,
+            guide_source: self.cut,
+            limit_y: 0.0,
+        }
+    }
 }
 impl widget::canvas::Program<Message> for ZoomRule {
-    type State = ();
+    type State = DragState;
+    fn update(
+        &self,
+        state: &mut Self::State,
+        event: &widget::canvas::Event,
+        bounds: Rectangle,
+        cursor: iced::mouse::Cursor,
+    ) -> Option<widget::canvas::Action<Message>> {
+        if matches!(event, widget::canvas::Event::Window(_)) {
+            return None;
+        }
+        self.overlay().update(state, event, bounds, cursor)
+    }
+    fn mouse_interaction(
+        &self,
+        state: &Self::State,
+        bounds: Rectangle,
+        cursor: iced::mouse::Cursor,
+    ) -> iced::mouse::Interaction {
+        self.overlay().mouse_interaction(state, bounds, cursor)
+    }
     fn draw(
         &self,
         _state: &Self::State,
         renderer: &iced::Renderer,
-        _theme: &vse_ui::Theme,
+        app_theme: &vse_ui::Theme,
         bounds: Rectangle,
         _cursor: iced::mouse::Cursor,
     ) -> Vec<widget::canvas::Geometry> {
@@ -430,8 +523,8 @@ impl widget::canvas::Program<Message> for ZoomRule {
         draw_rule(
             &mut frame,
             self.y.min(bounds.height - 1.0),
-            RULE_COLOR,
-            false,
+            app_theme.seed().primary,
+            true,
         );
         vec![frame.into_geometry()]
     }
@@ -441,12 +534,35 @@ fn draw_rule(frame: &mut widget::canvas::Frame, y: f32, color: Color, handles: b
     use widget::canvas::{Path, Stroke};
     frame.stroke(
         &Path::line(Point::new(0.0, y), Point::new(frame.width(), y)),
-        Stroke::default().with_color(color).with_width(2.0),
+        Stroke::default()
+            .with_color(color)
+            .with_width(metrics::RULE_WIDTH),
     );
     if handles {
-        frame.fill(&Path::circle(Point::new(7.0, y), 5.0), color);
+        let center = frame.width() / 2.0;
+        frame.fill_rectangle(
+            Point::new(
+                center - metrics::GRIP_WIDTH / 2.0,
+                y - metrics::GRIP_HEIGHT / 2.0,
+            ),
+            Size::new(metrics::GRIP_WIDTH, metrics::GRIP_HEIGHT),
+            color,
+        );
+        for dx in [-metrics::GRIP_DOT_SPACING, 0.0, metrics::GRIP_DOT_SPACING] {
+            frame.fill(
+                &Path::circle(Point::new(center + dx, y), metrics::GRIP_DOT_RADIUS),
+                theme::color(theme::COSMIC.accent.on),
+            );
+        }
         frame.fill(
-            &Path::circle(Point::new(frame.width() - 7.0, y), 5.0),
+            &Path::circle(Point::new(metrics::HANDLE_INSET, y), metrics::HANDLE_RADIUS),
+            color,
+        );
+        frame.fill(
+            &Path::circle(
+                Point::new(frame.width() - metrics::HANDLE_INSET, y),
+                metrics::HANDLE_RADIUS,
+            ),
             color,
         );
     }
@@ -471,7 +587,7 @@ mod tests {
             scale: 0.5,
             guide_y: 100.0,
             guide_source: 1200,
-            tint_height: 138.5,
+            limit_y: 138.5,
         }
     }
 
@@ -486,14 +602,27 @@ mod tests {
             },
             viewport,
         );
-        assert!(
-            (geometry.page_height + LABEL_HEIGHT_PX + BEYOND_LIMIT_PX - viewport.height).abs()
-                < 0.001
-        );
+        assert!((geometry.page_height + BEYOND_LIMIT_PX - viewport.height).abs() < 0.001);
     }
 
     #[test]
-    fn gap_and_history_preserve_all_source_rows() {
+    fn tooltip_hover_area_stays_on_the_cut_line_at_page_edges() {
+        let geometry = PreviewGeometry::fit(region(), Size::new(1000.0, 760.0));
+        let height = geometry.page_height;
+        for cut in [1000, 1100, 1277] {
+            let target = geometry.rule_bounds(cut, height);
+            assert_eq!(target.width, geometry.width);
+            assert!(target.y >= 0.0 && target.y + target.height <= height);
+            let visible_rule_y = geometry.local_y(cut).clamp(1.0, height - 1.0);
+            assert!(target.contains(Point::new(geometry.width / 2.0, visible_rule_y)));
+            assert_eq!(target.height, RULE_HIT_PX * 2.0);
+        }
+        let target = geometry.rule_bounds(1100, height);
+        assert!(!target.contains(Point::new(geometry.width / 2.0, 0.0)));
+    }
+
+    #[test]
+    fn contiguous_segments_and_history_preserve_all_source_rows() {
         let geometry = PreviewGeometry::fit(region(), Size::new(1000.0, 760.0));
         let segments = PreviewSegments::new(region(), &geometry);
         assert_eq!(segments.prefix.unwrap().0.height, 1000);

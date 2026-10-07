@@ -1,0 +1,13 @@
+diff --git a/widget/src/keyed/column.rs b/widget/src/keyed/column.rs
+index d398f1747..b6b68a8b1 100644
+--- a/widget/src/keyed/column.rs
++++ b/widget/src/keyed/column.rs
+@@ -204,7 +204,7 @@ where
+         tree::diff_children_custom_with_search(
+             children,
+             &mut self.children,
+-            |tree, child| child.as_widget_mut().diff(tree),
++            |tree, child| tree.diff(child.as_widget_mut()),
+             |index| {
+                 self.keys.get(index).or_else(|| self.keys.last()).copied()
+                     != Some(state.keys[index])

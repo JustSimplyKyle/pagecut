@@ -1,20 +1,59 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use eyre::{Context, Result, ensure};
 use flate2::{Compression, write::ZlibEncoder};
 use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref};
-use vse_ui::iced::{
-    Rectangle,
-    advanced::graphics::image::{self as raster, Buffer},
-    widget::image::Handle,
-};
+use vse_ui::iced::{Rectangle, advanced::graphics::image::Buffer, widget::image::Handle};
 
-use crate::slices::{A4_HEIGHT_MM, A4_WIDTH_MM, MARGIN_MM, Slice, a4_height};
+use crate::{layout::PageSettings, slices::Slice};
 
-pub async fn choose_and_export(source: Handle, pages: Vec<Slice>) -> Result<Option<PathBuf>> {
+#[cfg(test)]
+use vse_ui::iced::advanced::graphics::image as raster;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExportProgress {
+    ChoosingDestination,
+    PreparingDocument,
+    Pages { completed: usize, total: usize },
+    SavingFile,
+}
+
+impl ExportProgress {
+    pub fn label(&self) -> String {
+        match self {
+            Self::ChoosingDestination => "Choose where to save your PDF…".into(),
+            Self::PreparingDocument => "Exporting PDF — preparing document…".into(),
+            Self::Pages { completed, total } => {
+                format!("Exporting PDF — {completed} of {total} pages processed…")
+            }
+            Self::SavingFile => "Exporting PDF — saving file…".into(),
+        }
+    }
+    pub fn fraction(&self) -> Option<f32> {
+        match self {
+            Self::Pages { completed, total } => Some(*completed as f32 / (*total).max(1) as f32),
+            _ => None,
+        }
+    }
+    pub fn button_label(&self) -> &'static str {
+        match self {
+            Self::ChoosingDestination => "Choose destination…",
+            _ => "Exporting PDF…",
+        }
+    }
+}
+
+pub async fn choose_and_export(
+    source: Handle,
+    pixels: Arc<Buffer>,
+    pages: Vec<Slice>,
+    settings: PageSettings,
+    progress: impl Fn(ExportProgress) + Send + 'static,
+) -> Result<Option<PathBuf>> {
     let mut dialog = rfd::AsyncFileDialog::new()
-        .set_title("Export A4 PDF")
+        .set_title("Export PDF")
         .add_filter("PDF", &["pdf"])
         .set_file_name(default_name(&source));
     if let Handle::Path(_, path) = &source
@@ -30,7 +69,7 @@ pub async fn choose_and_export(source: Handle, pages: Vec<Slice>) -> Result<Opti
         target.set_extension("pdf");
     }
     tokio::task::spawn_blocking(move || {
-        write(&source, &pages, &target)?;
+        write_with_progress(&source, &pixels, &pages, &target, settings, &progress)?;
         Ok(Some(target))
     })
     .await
@@ -45,7 +84,30 @@ fn default_name(source: &Handle) -> String {
     format!("{stem}.pdf")
 }
 
+#[cfg(test)]
 fn write(source: &Handle, pages: &[Slice], target: &Path) -> Result<()> {
+    write_with_settings(source, pages, target, PageSettings::default())
+}
+#[cfg(test)]
+fn write_with_settings(
+    source: &Handle,
+    pages: &[Slice],
+    target: &Path,
+    settings: PageSettings,
+) -> Result<()> {
+    let pixels = raster::load(source)?;
+    write_with_progress(source, &pixels, pages, target, settings, &|_| {})
+}
+
+fn write_with_progress(
+    source: &Handle,
+    pixels: &Buffer,
+    pages: &[Slice],
+    target: &Path,
+    settings: PageSettings,
+    progress: &impl Fn(ExportProgress),
+) -> Result<()> {
+    progress(ExportProgress::PreparingDocument);
     if let Handle::Path(_, path) = source {
         if target.exists() {
             ensure!(
@@ -54,8 +116,8 @@ fn write(source: &Handle, pages: &[Slice], target: &Path) -> Result<()> {
             );
         }
     }
-    let pixels = raster::load(source).wrap_err("Could not read the source image for export")?;
-    let pdf = render(&pixels, pages)?;
+    let pdf = render_with_progress(pixels, pages, settings, progress)?;
+    progress(ExportProgress::SavingFile);
     let parent = target.parent().unwrap_or_else(|| Path::new("."));
     let mut temporary =
         tempfile::NamedTempFile::new_in(parent).wrap_err("Could not create the PDF")?;
@@ -70,9 +132,27 @@ fn write(source: &Handle, pages: &[Slice], target: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn render(pixels: &Buffer, pages: &[Slice]) -> Result<Vec<u8>> {
-    validate_pages(pixels, pages)?;
-    let layout = PageLayout::new(pixels.width());
+    render_with_settings(pixels, pages, PageSettings::default())
+}
+#[cfg(test)]
+fn render_with_settings(
+    pixels: &Buffer,
+    pages: &[Slice],
+    settings: PageSettings,
+) -> Result<Vec<u8>> {
+    render_with_progress(pixels, pages, settings, &|_| {})
+}
+
+fn render_with_progress(
+    pixels: &Buffer,
+    pages: &[Slice],
+    settings: PageSettings,
+    progress: &impl Fn(ExportProgress),
+) -> Result<Vec<u8>> {
+    validate_pages(pixels, pages, settings)?;
+    let layout = PageLayout::configured(pixels.width(), settings);
     let catalog = Ref::new(1);
     let tree = Ref::new(2);
     let page_refs: Vec<_> = (0..pages.len())
@@ -84,7 +164,11 @@ fn render(pixels: &Buffer, pages: &[Slice]) -> Result<Vec<u8>> {
         .kids(page_refs.iter().copied())
         .count(pages.len() as i32);
 
-    for (slice, page_ref) in pages.iter().zip(page_refs) {
+    progress(ExportProgress::Pages {
+        completed: 0,
+        total: pages.len(),
+    });
+    for (index, (slice, page_ref)) in pages.iter().zip(page_refs).enumerate() {
         let region = slice.region();
         let image_ref = Ref::new(page_ref.get() + 1);
         let content_ref = Ref::new(page_ref.get() + 2);
@@ -112,11 +196,15 @@ fn render(pixels: &Buffer, pages: &[Slice]) -> Result<Vec<u8>> {
         content.x_object(name);
         content.restore_state();
         pdf.stream(content_ref, &content.finish());
+        progress(ExportProgress::Pages {
+            completed: index + 1,
+            total: pages.len(),
+        });
     }
     Ok(pdf.finish())
 }
 
-fn validate_pages(pixels: &Buffer, pages: &[Slice]) -> Result<()> {
+fn validate_pages(pixels: &Buffer, pages: &[Slice], settings: PageSettings) -> Result<()> {
     ensure!(!pages.is_empty(), "There are no confirmed pages to export.");
     ensure!(
         pages.len() <= (i32::MAX as usize - 3) / 3,
@@ -134,8 +222,8 @@ fn validate_pages(pixels: &Buffer, pages: &[Slice]) -> Result<()> {
                 && page.width == pixels.width()
                 && page.y == next_y
                 && page.height > 0
-                && page.height <= a4_height(pixels.width()),
-            "The confirmed cuts are invalid or do not fit A4."
+                && page.height <= settings.height(pixels.width()),
+            "The confirmed cuts are invalid or do not fit the page."
         );
         next_y = next_y
             .checked_add(page.height)
@@ -147,7 +235,7 @@ fn validate_pages(pixels: &Buffer, pages: &[Slice]) -> Result<()> {
     }
     ensure!(
         next_y == pixels.height(),
-        "Confirm the remaining image before exporting."
+        "The pages must cover the entire image."
     );
     Ok(())
 }
@@ -179,11 +267,16 @@ struct PageLayout {
 }
 
 impl PageLayout {
+    #[cfg(test)]
     fn new(source_width: u32) -> Self {
+        Self::configured(source_width, PageSettings::default())
+    }
+    fn configured(source_width: u32, settings: PageSettings) -> Self {
         const POINTS_PER_MM: f64 = 72.0 / 25.4;
-        let width = (A4_WIDTH_MM * POINTS_PER_MM) as f32;
-        let height = (A4_HEIGHT_MM * POINTS_PER_MM) as f32;
-        let margin = (MARGIN_MM * POINTS_PER_MM) as f32;
+        let (width_mm, height_mm) = settings.dimensions();
+        let width = (width_mm * POINTS_PER_MM) as f32;
+        let height = (height_mm * POINTS_PER_MM) as f32;
+        let margin = (f64::from(settings.margin.0) * POINTS_PER_MM) as f32;
         let image_width = width - 2.0 * margin;
         Self {
             width,
@@ -291,10 +384,66 @@ mod tests {
     }
 
     #[test]
+    fn export_uses_the_selected_paper_orientation_and_margins() {
+        let settings = PageSettings {
+            paper: crate::layout::Paper::A5,
+            orientation: crate::layout::Orientation::Landscape,
+            margin: crate::layout::Margin(5),
+        };
+        let editor =
+            crate::slices::SliceEditor::prepared(vse_ui::iced::Size::new(190, 400), settings);
+        let pages: Vec<_> = editor.pages().map(|(_, page)| page).collect();
+        let pixels = raster::load(&source()).unwrap();
+        let pdf = render_with_settings(&pixels, &pages, settings).unwrap();
+        assert!(pdf.starts_with(b"%PDF-"));
+        let layout = PageLayout::configured(190, settings);
+        assert!((layout.width - 595.2756).abs() < 0.001);
+        assert!((layout.height - 419.52756).abs() < 0.001);
+        for page in pages {
+            assert!(layout.image_transform(page.rectangle.height)[5] >= layout.margin);
+        }
+    }
+
+    #[test]
     fn alpha_is_composited_on_white() {
         assert_eq!(over_white(0, 0), 255);
         assert_eq!(over_white(0, 128), 127);
         assert_eq!(over_white(25, 255), 25);
+    }
+
+    #[test]
+    fn export_reports_actual_completed_pages_and_the_file_saving_stage() {
+        use std::cell::RefCell;
+        let stages = RefCell::new(Vec::new());
+        let dir = tempfile::tempdir().unwrap();
+        write_with_progress(
+            &source(),
+            &raster::load(&source()).unwrap(),
+            &pages(),
+            &dir.path().join("progress.pdf"),
+            PageSettings::default(),
+            &|stage| stages.borrow_mut().push(stage),
+        )
+        .unwrap();
+        assert_eq!(
+            stages.into_inner(),
+            vec![
+                ExportProgress::PreparingDocument,
+                ExportProgress::Pages {
+                    completed: 0,
+                    total: 2
+                },
+                ExportProgress::Pages {
+                    completed: 1,
+                    total: 2
+                },
+                ExportProgress::Pages {
+                    completed: 2,
+                    total: 2
+                },
+                ExportProgress::SavingFile,
+            ]
+        );
     }
 
     #[test]
@@ -307,6 +456,36 @@ mod tests {
         write(&source(), &pages(), &path).unwrap();
         assert!(std::fs::read(path).unwrap().starts_with(b"%PDF-"));
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn exports_loaded_pixels_even_if_the_source_changes_or_disappears() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.png");
+        let pixels = raster::load(&source()).unwrap();
+        pixels.save(&path).unwrap();
+        let handle = Handle::from_path(&path);
+        let loaded = raster::load(&handle).unwrap();
+        let expected = render(&loaded, &pages()).unwrap();
+
+        std::fs::write(&path, b"changed source").unwrap();
+        for name in ["changed.pdf", "deleted.pdf"] {
+            let target = dir.path().join(name);
+            write_with_progress(
+                &handle,
+                &loaded,
+                &pages(),
+                &target,
+                PageSettings::default(),
+                &|_| {},
+            )
+            .unwrap();
+            assert_eq!(std::fs::read(target).unwrap(), expected);
+            if path.exists() {
+                assert_eq!(std::fs::read(&path).unwrap(), b"changed source");
+                std::fs::remove_file(&path).unwrap();
+            }
+        }
     }
 
     #[test]

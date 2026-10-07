@@ -1,5 +1,39 @@
 {
   "nodes": {
+    "cosmic-iced-source": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1787248723,
+        "narHash": "sha256-9a4thNcn6SqygyjlZTVSsT0e/7IMgu/38pdNjCEYQYA=",
+        "owner": "pop-os",
+        "repo": "iced",
+        "rev": "cac09daee4b49dbfa7a6661e85f36f3b2968ae74",
+        "type": "github"
+      },
+      "original": {
+        "owner": "pop-os",
+        "repo": "iced",
+        "rev": "cac09daee4b49dbfa7a6661e85f36f3b2968ae74",
+        "type": "github"
+      }
+    },
+    "cosmic-source": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1787730577,
+        "narHash": "sha256-C3DTBkAYkgcq6Xtmq8Le2LqlvQ6vv9eqZBR+PTBigK0=",
+        "owner": "pop-os",
+        "repo": "libcosmic",
+        "rev": "e9d8c30e9490c7badcddb7f2ab6a404e8ecccc4d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "pop-os",
+        "repo": "libcosmic",
+        "rev": "e9d8c30e9490c7badcddb7f2ab6a404e8ecccc4d",
+        "type": "github"
+      }
+    },
     "crane": {
       "locked": {
         "lastModified": 1773189535,
@@ -55,6 +89,23 @@
       "original": {
         "owner": "hercules-ci",
         "repo": "flake-parts",
+        "type": "github"
+      }
+    },
+    "iced-source": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1790436824,
+        "narHash": "sha256-xx2fS0S7DfRKf3pPTOrVF7SAxy5Kgu4HoJi6fgMsPVc=",
+        "owner": "JustSimplyKyle",
+        "repo": "iced",
+        "rev": "bd9d88e5a54d59acc74a49e9f1c4593dbcaab294",
+        "type": "github"
+      },
+      "original": {
+        "owner": "JustSimplyKyle",
+        "repo": "iced",
+        "rev": "bd9d88e5a54d59acc74a49e9f1c4593dbcaab294",
         "type": "github"
       }
     },
@@ -123,10 +174,14 @@
     },
     "root": {
       "inputs": {
+        "cosmic-iced-source": "cosmic-iced-source",
+        "cosmic-source": "cosmic-source",
         "dioxus": "dioxus",
+        "iced-source": "iced-source",
         "nixpkgs": "nixpkgs_2",
         "rust-overlay": "rust-overlay_2",
-        "utils": "utils"
+        "utils": "utils",
+        "vse-source": "vse-source"
       }
     },
     "rust-overlay": {
@@ -210,6 +265,23 @@
       "original": {
         "owner": "numtide",
         "repo": "flake-utils",
+        "type": "github"
+      }
+    },
+    "vse-source": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1790938121,
+        "narHash": "sha256-rUjTMLpb9lYwCv/3pFp+PUbaBaqNFpytAZ9jXQjTbMw=",
+        "owner": "JustSimplyKyle",
+        "repo": "videosubextract",
+        "rev": "504ce20035f559bf78b52556ea6e13738e3fa126",
+        "type": "github"
+      },
+      "original": {
+        "owner": "JustSimplyKyle",
+        "repo": "videosubextract",
+        "rev": "504ce20035f559bf78b52556ea6e13738e3fa126",
         "type": "github"
       }
     }
