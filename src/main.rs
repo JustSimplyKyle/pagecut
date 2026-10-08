@@ -32,7 +32,7 @@ struct App {
     image: Option<widget::image::Allocation>,
     source: Option<widget::image::Handle>,
     error: Option<Arc<eyre::Report>>,
-    slicing: Option<SliceEditor>,
+    slice_editor: Option<SliceEditor>,
     preview_scale: f32,
     status: Option<String>,
     exporting: Option<pdf::ExportProgress>,
@@ -133,12 +133,7 @@ impl FromResidual<Option<Infallible>> for Event {
 
 impl App {
     fn subscription(&self) -> iced::Subscription<Message> {
-        if self.error.is_none()
-            && self
-                .slicing
-                .as_ref()
-                .is_some_and(|slices| slices.current().is_some())
-        {
+        if self.error.is_none() && self.slice_editor.as_ref().is_some() {
             iced::keyboard::listen().filter_map(Message::keyboard)
         } else {
             iced::Subscription::none()
@@ -159,7 +154,7 @@ impl App {
                 image: None,
                 source: None,
                 error: None,
-                slicing: None,
+                slice_editor: None,
                 preview_scale: 1.0,
                 status: None,
                 exporting: None,
@@ -187,7 +182,7 @@ impl App {
     }
 
     fn cut_key(&self) -> Option<(u64, usize, u32)> {
-        self.slicing
+        self.slice_editor
             .as_ref()
             .map(|slices| (self.load_id, slices.selected(), slices.draft()))
     }
@@ -229,7 +224,7 @@ impl App {
                     return Task::none().into();
                 }
                 let slices = self
-                    .slicing
+                    .slice_editor
                     .as_ref()
                     .filter(|slices| slices.export_ready())?;
                 let source = self.source.clone()?;
@@ -268,10 +263,7 @@ impl App {
             }
             Message::PdfExported(result) => {
                 self.exporting = None;
-                self.status = match result? {
-                    Some(path) => Some(format!("✓ PDF saved: {}", path.display())),
-                    None => None,
-                };
+                self.status = format!("PDF saved: {}", result??.display()).apply(Some);
                 Task::none()
             }
             Message::DismissError => {
@@ -286,7 +278,7 @@ impl App {
                 self.source = Some(handle.clone());
                 self.image = None;
                 self.error = None;
-                self.slicing = None;
+                self.slice_editor = None;
                 self.pixels = None;
                 self.undo.clear();
                 self.redo.clear();
@@ -318,7 +310,7 @@ impl App {
                 }
                 self.status = None;
                 if self.pixels.is_some() {
-                    self.slicing = Some(SliceEditor::prepared(allocation.size(), self.output));
+                    self.slice_editor = Some(SliceEditor::prepared(allocation.size(), self.output));
                 }
                 self.image = Some(allocation);
                 self.error = None;
@@ -328,7 +320,7 @@ impl App {
                 if load_id != self.load_id {
                     return Task::none().into();
                 }
-                // Bytes clones share the decoded storage with Iced's upload worker.
+
                 let handle = widget::image::Handle::from_rgba(
                     pixels.width(),
                     pixels.height(),
@@ -345,7 +337,7 @@ impl App {
                     return Task::none().into();
                 }
                 let pixels = self.pixels.clone()?;
-                let cut = self.slicing.as_ref()?.draft();
+                let cut = self.slice_editor.as_ref()?.draft();
                 self.cut_detection = blank::CutDetection::Checking;
                 Task::perform(blank::check(pixels, cut), move |result| {
                     Message::CutChecked(check_id, result)
@@ -358,25 +350,19 @@ impl App {
                 Task::none()
             }
             Message::ResetCut => {
-                if let Some(slices) = &mut self.slicing {
-                    slices.reset_cut();
-                }
+                self.slice_editor.as_mut()?.reset_cut();
                 Task::none()
             }
             Message::Undo => {
-                if let Some(previous) = self.undo.pop() {
-                    if let Some(current) = self.slicing.replace(previous) {
-                        self.redo.push(current);
-                    }
-                }
+                let previous = self.undo.pop()?;
+                let current = self.slice_editor.replace(previous)?;
+                self.redo.push(current);
                 self.scroll_to_selected()
             }
             Message::Redo => {
-                if let Some(next) = self.redo.pop() {
-                    if let Some(current) = self.slicing.replace(next) {
-                        self.undo.push(current);
-                    }
-                }
+                let next = self.redo.pop()?;
+                let current = self.slice_editor.replace(next)?;
+                self.undo.push(current);
                 self.scroll_to_selected()
             }
             Message::Zoom(delta) => {
@@ -395,43 +381,35 @@ impl App {
             }
             Message::MoveGuide(end) => {
                 self.status = None;
-                if let Some(slices) = &mut self.slicing {
-                    slices.move_guide(end);
-                }
+                self.slice_editor.as_mut()?.move_guide(end);
                 Task::none()
             }
             Message::NudgeGuide(delta) => {
                 self.status = None;
-                if let Some(slices) = &mut self.slicing {
-                    slices.nudge(delta);
-                }
+                self.slice_editor.as_mut()?.nudge(delta);
                 Task::none()
             }
             Message::ConfirmCut => {
                 self.status = None;
                 self.remember();
-                if self.slicing.as_mut().is_some_and(SliceEditor::confirm) {
-                    if let Some(slices) = &mut self.slicing {
-                        if slices.current().is_none() {
-                            slices.select(slices.count().saturating_sub(1));
-                        }
-                    }
-                    return self.scroll_to_selected().into();
+                let editor = self.slice_editor.as_mut()?;
+                if !editor.commit_cut() {
+                    return Task::none().into();
                 }
-                Task::none()
+                self.scroll_to_selected()
             }
             Message::SelectPage(index) => {
-                let slices = self.slicing.as_ref()?;
+                let slices = self.slice_editor.as_ref()?;
                 if index == slices.selected() || !slices.can_select(index) {
                     return Task::none().into();
                 }
                 if slices.has_pending_cut() {
                     self.remember();
-                    if !self.slicing.as_mut()?.confirm() {
+                    if !self.slice_editor.as_mut()?.commit_cut() {
                         return Task::none().into();
                     }
                 }
-                self.slicing.as_mut()?.select(index);
+                self.slice_editor.as_mut()?.select(index);
                 self.scroll_to_selected()
             }
             Message::PreviewScale(scale) => {
@@ -467,7 +445,7 @@ impl App {
         let content = if let Some(error) = &self.error {
             self.error_screen(error)
         } else {
-            match (&self.image, &self.slicing) {
+            match (&self.image, &self.slice_editor) {
                 (Some(allocation), Some(slices)) => self.picker(allocation, slices),
                 _ => self.placeholder(),
             }
@@ -539,7 +517,10 @@ impl App {
         let can_export = self.exporting.is_none()
             && self.error.is_none()
             && self.source.is_some()
-            && self.slicing.as_ref().is_some_and(SliceEditor::export_ready);
+            && self
+                .slice_editor
+                .as_ref()
+                .is_some_and(SliceEditor::export_ready);
         let open = self.control("Open…", Some(Message::PickImage));
         let undo = self.control("↶", (!self.undo.is_empty()).then_some(Message::Undo));
         let redo = self.control("↷", (!self.redo.is_empty()).then_some(Message::Redo));
@@ -601,16 +582,15 @@ impl App {
     }
 
     fn settings(&self) -> layout::PageSettings {
-        self.slicing
+        self.slice_editor
             .as_ref()
-            .map(|s| s.settings)
-            .unwrap_or(self.output)
+            .map_or(self.output, |s| s.settings)
     }
     fn repaginate(&mut self, settings: layout::PageSettings) -> Task<Message> {
         self.remember();
         self.output = settings;
         if let Some(image) = &self.image {
-            self.slicing = Some(SliceEditor::prepared(image.size(), settings));
+            self.slice_editor = Some(SliceEditor::prepared(image.size(), settings));
         }
         self.scroll_to_selected()
     }
@@ -618,7 +598,7 @@ impl App {
         format!("{:.0}%", self.preview_scale * 100.0)
     }
     fn remember(&mut self) {
-        if let Some(current) = &self.slicing {
+        if let Some(current) = &self.slice_editor {
             let mut saved = current.clone();
             saved.reset_cut();
             self.undo.push(saved);
@@ -634,9 +614,11 @@ impl App {
     }
 
     fn scroll_to_selected(&self) -> Task<Message> {
-        self.slicing.as_ref().map_or_else(Task::none, |slices| {
-            preview::scroll_to(slices.start(), self.preview_scale)
-        })
+        self.slice_editor
+            .as_ref()
+            .map_or_else(Task::none, |slices| {
+                preview::scroll_to(slices.current().y, self.preview_scale)
+            })
     }
 
     fn picker<'a>(
@@ -661,21 +643,17 @@ impl App {
         fit_width: bool,
     ) -> Element<'a, Message> {
         let header = widget::row![
-            widget::text::title3(slices.selected_label()),
+            widget::text::title3("Editor"),
             widget::text("│").style(widget::text::secondary),
             widget::text::caption("Drag the line to adjust the page break")
                 .style(widget::text::secondary)
         ]
-        .spacing(theme::spacing().space_s)
+        .spacing(theme::spacing().space_xs)
         .align_y(iced::Alignment::Center);
-        let footer = widget::row![
-            widget::text::caption(slices.progress_label()).style(widget::text::secondary),
-            widget::space().width(Fill),
-            widget::text::caption("Cuts save when you switch pages").style(widget::text::secondary)
-        ];
+        let footer = widget::text::caption(slices.progress_label()).style(widget::text::secondary);
         widget::column![
             header,
-            preview::image(allocation, slices, zoom, fit_width),
+            preview::preview(allocation, slices, zoom, fit_width),
             footer
         ]
         .spacing(theme::spacing().space_xs)
@@ -739,65 +717,66 @@ mod tests {
     #[test]
     fn undo_and_redo_restore_saved_boundaries() {
         let (mut app, _) = App::new();
-        app.slicing = Some(SliceEditor::prepared(
+        app.slice_editor = Some(SliceEditor::prepared(
             iced::Size::new(190, 700),
             layout::PageSettings::default(),
         ));
-        let original = app.slicing.as_ref().unwrap().draft();
+        let original = app.slice_editor.as_ref().unwrap().draft();
         let _ = app.update(Message::NudgeGuide(-1));
         let _ = app.update(Message::ConfirmCut);
-        assert!(app.slicing.as_ref().unwrap().export_ready());
+        assert_eq!(app.slice_editor.as_ref().unwrap().selected(), 1);
+        assert!(app.slice_editor.as_ref().unwrap().export_ready());
         let _ = app.update(Message::Undo);
-        assert_eq!(app.slicing.as_ref().unwrap().draft(), original);
-        assert!(app.slicing.as_ref().unwrap().export_ready());
+        assert_eq!(app.slice_editor.as_ref().unwrap().draft(), original);
+        assert!(app.slice_editor.as_ref().unwrap().export_ready());
         let _ = app.update(Message::Redo);
-        app.slicing.as_mut().unwrap().select(0);
-        assert_eq!(app.slicing.as_ref().unwrap().draft(), original - 1);
-        assert!(app.slicing.as_ref().unwrap().export_ready());
+        app.slice_editor.as_mut().unwrap().select(0);
+        assert_eq!(app.slice_editor.as_ref().unwrap().draft(), original - 1);
+        assert!(app.slice_editor.as_ref().unwrap().export_ready());
     }
     #[test]
     fn switching_pages_saves_the_cut_and_keeps_the_clicked_page_selected() {
         let (mut app, _) = App::new();
-        app.slicing = Some(SliceEditor::prepared(
+        app.slice_editor = Some(SliceEditor::prepared(
             iced::Size::new(190, 700),
             layout::PageSettings::default(),
         ));
-        let original = app.slicing.as_ref().unwrap().draft();
+        let original = app.slice_editor.as_ref().unwrap().draft();
         let _ = app.update(Message::MoveGuide(100));
         let _ = app.update(Message::SelectPage(2));
-        let slices = app.slicing.as_ref().unwrap();
+        let slices = app.slice_editor.as_ref().unwrap();
         assert_eq!(slices.selected(), 2);
         assert_eq!(slices.pages().next().unwrap().1.rectangle.height, 100);
         assert!(slices.export_ready());
         assert_eq!(app.undo.len(), 1);
         let _ = app.update(Message::SelectPage(0));
-        assert_eq!(app.slicing.as_ref().unwrap().draft(), 100);
+        assert_eq!(app.slice_editor.as_ref().unwrap().draft(), 100);
         assert_eq!(app.undo.len(), 1);
         let _ = app.update(Message::Undo);
-        assert_eq!(app.slicing.as_ref().unwrap().draft(), original);
+        assert_eq!(app.slice_editor.as_ref().unwrap().draft(), original);
         let _ = app.update(Message::Redo);
-        assert_eq!(app.slicing.as_ref().unwrap().draft(), 100);
+        assert_eq!(app.slice_editor.as_ref().unwrap().draft(), 100);
     }
 
     #[test]
     fn clicking_the_current_or_invalid_page_preserves_the_draft() {
         let (mut app, _) = App::new();
-        app.slicing = Some(SliceEditor::prepared(
+        app.slice_editor = Some(SliceEditor::prepared(
             iced::Size::new(190, 700),
             layout::PageSettings::default(),
         ));
         let _ = app.update(Message::MoveGuide(150));
         let _ = app.update(Message::SelectPage(0));
         let _ = app.update(Message::SelectPage(99));
-        assert_eq!(app.slicing.as_ref().unwrap().draft(), 150);
-        assert!(app.slicing.as_ref().unwrap().has_pending_cut());
+        assert_eq!(app.slice_editor.as_ref().unwrap().draft(), 150);
+        assert!(app.slice_editor.as_ref().unwrap().has_pending_cut());
         assert!(app.undo.is_empty());
     }
 
     #[test]
     fn exporting_stays_visible_during_edits_and_rejects_duplicate_exports() {
         let (mut app, _) = App::new();
-        app.slicing = Some(SliceEditor::prepared(
+        app.slice_editor = Some(SliceEditor::prepared(
             iced::Size::new(190, 700),
             layout::PageSettings::default(),
         ));
@@ -842,7 +821,7 @@ mod tests {
     #[test]
     fn detection_waits_for_the_latest_cut_and_ignores_stale_results() {
         let (mut app, _) = App::new();
-        app.slicing = Some(SliceEditor::prepared(
+        app.slice_editor = Some(SliceEditor::prepared(
             iced::Size::new(190, 700),
             layout::PageSettings::default(),
         ));

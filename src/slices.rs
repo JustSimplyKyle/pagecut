@@ -25,7 +25,7 @@ impl Slice {
         }
     }
 
-    fn end(self) -> u32 {
+    pub fn end(self) -> u32 {
         self.region().y + self.rectangle.height
     }
 }
@@ -41,9 +41,7 @@ pub struct SliceEditor {
 
 impl SliceEditor {
     pub fn export_ready(&self) -> bool {
-        let draft_at_end =
-            try { self.slices.get(self.selected)?.end() == self.draft }.is_some_and(identity);
-        self.end() == self.size.height && (self.current().is_none() || draft_at_end)
+        self.end() == self.size.height && (!self.has_pending_cut())
     }
 
     pub fn new(size: Size<u32>) -> Self {
@@ -59,22 +57,22 @@ impl SliceEditor {
     pub fn prepared(size: Size<u32>, settings: PageSettings) -> Self {
         let mut editor = Self::new(size);
         editor.settings = settings;
-        while editor.current().is_some() {
-            editor.draft = editor.suggested_cut();
-            editor.confirm();
+        let page_height = editor.page_height();
+        // Leave room to adjust adjacent pages when an earlier cut is moved.
+        let reserve = (page_height / ADJUSTMENT_RESERVE_FRACTION).min(MAX_ADJUSTMENT_RESERVE);
+        let mut top = 0;
+        while top < size.height {
+            let limit = top.saturating_add(page_height).min(size.height);
+            let end = if limit == size.height {
+                limit
+            } else {
+                limit - reserve
+            };
+            editor.slices.push(editor.slice(top, end));
+            top = end;
         }
         editor.select(0);
         editor
-    }
-
-    fn suggested_cut(&self) -> u32 {
-        if self.limit() == self.size.height {
-            return self.size.height;
-        }
-        // Leave room to adjust adjacent pages when an earlier cut is moved.
-        let reserve =
-            (self.page_height() / ADJUSTMENT_RESERVE_FRACTION).min(MAX_ADJUSTMENT_RESERVE);
-        self.limit().saturating_sub(reserve)
     }
 
     pub fn cut_label(&self) -> String {
@@ -102,9 +100,13 @@ impl SliceEditor {
     pub fn reset_cut(&mut self) {
         self.select(self.selected);
     }
-    pub fn current(&self) -> Option<Rectangle<u32>> {
-        let top = self.start();
-        (top < self.size.height).then(|| self.slice(top, self.size.height).region())
+    /// The source region beginning at the selected page and extending to the image end.
+    pub fn current(&self) -> Rectangle<u32> {
+        let top = self
+            .slices
+            .get(self.selected)
+            .map_or_else(|| self.end(), |slice| slice.y_offset);
+        self.slice(top, self.size.height).region()
     }
 
     pub fn pages(&self) -> impl Iterator<Item = (usize, Slice)> + '_ {
@@ -126,11 +128,9 @@ impl SliceEditor {
     }
 
     pub fn has_pending_cut(&self) -> bool {
-        self.current().is_some()
-            && self
-                .slices
-                .get(self.selected)
-                .is_none_or(|page| page.end() != self.draft)
+        self.slices
+            .get(self.selected)
+            .is_none_or(|page| page.end() != self.draft)
     }
 
     pub fn select(&mut self, index: usize) -> bool {
@@ -155,34 +155,40 @@ impl SliceEditor {
         self.draft = self.draft.saturating_add_signed(delta).clamp(min, max);
     }
 
-    pub fn confirm(&mut self) -> bool {
+    /// Save the draft boundary, reflow later pages, and advance the selection if possible.
+    pub fn commit_cut(&mut self) -> bool {
         let (min, max) = self.draft_range();
-        if self.current().is_none() || !(min..=max).contains(&self.draft) {
+        if self.is_last_page() || !(min..=max).contains(&self.draft) {
             return false;
         }
-        let slice = self.slice(self.start(), self.draft);
+        let slice = self.slice(self.current().y, self.draft);
         if self.selected < self.slices.len() {
             self.slices[self.selected] = slice;
             self.reflow_following();
         } else {
             self.slices.push(slice);
         }
-        self.selected += 1;
-        self.draft = self
-            .slices
-            .get(self.selected)
-            .map(|slice| slice.end())
-            .unwrap_or(self.limit());
+        // Advance when another page exists; otherwise keep the final page selected.
+        let next = (self.selected + 1).min(self.count() - 1);
+        self.select(next);
         true
     }
 
-    /// Preserve later ends where they fit, moving overflowing boundaries earlier.
+    /// Remove consumed pages, preserve later ends where they fit, and merge the tail.
     fn reflow_following(&mut self) {
-        let covered_end = self.end();
+        let covered_end = self.end().max(self.draft);
+        let following = self.slices.split_off(self.selected + 1);
         let mut top = self.draft;
-        for index in self.selected + 1..self.slices.len() {
-            let end = self.fitting_end(top, self.slices[index].end());
-            self.slices[index] = self.slice(top, end);
+        for page in following {
+            if page.end() <= top {
+                continue;
+            }
+            if covered_end - top <= self.page_height() {
+                self.slices.push(self.slice(top, covered_end));
+                return;
+            }
+            let end = self.fitting_end(top, page.end());
+            self.slices.push(self.slice(top, end));
             top = end;
         }
         while top < covered_end {
@@ -205,32 +211,27 @@ impl SliceEditor {
     }
 
     pub fn limit(&self) -> u32 {
-        self.start()
+        self.current()
+            .y
             .saturating_add(self.page_height())
             .min(self.size.height)
     }
 
-    pub fn start(&self) -> u32 {
-        self.slices
-            .get(self.selected)
-            .map_or_else(|| self.end(), |slice| slice.y_offset)
+    fn end(&self) -> u32 {
+        self.slices.last().map_or(0, |slice| slice.end())
     }
 
-    pub fn selected(&self) -> usize {
+    pub const fn selected(&self) -> usize {
         self.selected
     }
 
-    pub fn draft(&self) -> u32 {
+    pub const fn draft(&self) -> u32 {
         self.draft
     }
 
     #[cfg(test)]
     pub fn restart(&mut self) {
         *self = Self::new(self.size);
-    }
-
-    fn end(&self) -> u32 {
-        self.slices.last().map_or(0, |slice| slice.end())
     }
 
     pub fn is_last_page(&self) -> bool {
@@ -243,15 +244,11 @@ impl SliceEditor {
         if self.is_last_page() {
             return (self.size.height, self.size.height);
         }
-        let min = self.start().saturating_add(1).min(self.size.height);
-        let mut max = self.limit();
-        if let Some(following) = self.slices.get(self.selected + 1) {
-            max = max.min(following.end().saturating_sub(1));
-        }
-        (min, max)
+        let min = self.current().y.saturating_add(1).min(self.size.height);
+        (min, self.limit())
     }
 
-    fn slice(&self, top: u32, end: u32) -> Slice {
+    const fn slice(&self, top: u32, end: u32) -> Slice {
         Slice {
             rectangle: Rectangle {
                 x: 0,
@@ -296,15 +293,15 @@ mod tests {
         let mut slices = SliceEditor::new(Size::new(190, 400));
         assert!(!slices.export_ready());
         slices.move_guide(200);
-        slices.confirm();
+        slices.commit_cut();
         assert!(!slices.export_ready());
-        slices.confirm();
+        slices.commit_cut();
         assert!(slices.export_ready());
         slices.select(0);
         assert!(slices.export_ready());
         slices.move_guide(210);
         assert!(!slices.export_ready());
-        slices.confirm();
+        slices.commit_cut();
         assert!(slices.export_ready());
     }
 
@@ -313,13 +310,17 @@ mod tests {
         let mut slices = SliceEditor::new(Size::new(190, 600));
         slices.move_guide(200);
         assert!(slices.slices.is_empty());
-        assert!(slices.confirm());
-        assert_eq!(slices.current().unwrap().y, 200);
-        assert_eq!(slices.current().unwrap().height, 400);
+        assert!(slices.commit_cut());
+        assert_eq!(slices.current().y, 200);
+        assert_eq!(slices.current().height, 400);
         slices.move_guide(477);
-        assert!(slices.confirm());
-        assert!(slices.confirm());
-        assert!(slices.current().is_none());
+        assert!(slices.commit_cut());
+        assert!(slices.commit_cut());
+        assert_eq!(slices.current().y, 477);
+        assert_eq!(slices.current().height, 123);
+        assert!(slices.can_select(slices.selected()));
+        assert!(slices.export_ready());
+        assert!(!slices.has_pending_cut());
         assert_eq!(
             slices
                 .pages()
@@ -327,21 +328,25 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(0, 200), (200, 277), (477, 123)]
         );
-        assert!(!slices.confirm());
+        assert!(!slices.commit_cut());
+        assert_eq!(slices.count(), 3);
+        assert_eq!(slices.selected(), 2);
+        assert_eq!(slices.current(), slices.slices[2].region());
+        assert!(slices.export_ready());
     }
 
     #[test]
     fn revising_an_earlier_cut_preserves_later_pages() {
         let mut slices = SliceEditor::new(Size::new(190, 700));
         slices.move_guide(200);
-        slices.confirm();
+        slices.commit_cut();
         slices.move_guide(400);
-        slices.confirm();
+        slices.commit_cut();
         slices.move_guide(600);
-        slices.confirm();
+        slices.commit_cut();
         slices.select(0);
         slices.move_guide(250);
-        slices.confirm();
+        slices.commit_cut();
         assert_eq!(
             slices.pages().map(|(_, p)| p.y_offset).collect::<Vec<_>>(),
             vec![0, 250, 400]
@@ -362,7 +367,7 @@ mod tests {
         editor.move_guide(150);
         assert_eq!(editor.draft(), 150);
         assert!(!editor.export_ready());
-        editor.confirm();
+        editor.commit_cut();
         assert_eq!(editor.slices[0].end(), 150);
         assert_eq!(editor.count(), count);
         assert!(editor.export_ready());
@@ -378,11 +383,11 @@ mod tests {
     #[test]
     fn reflow_adds_a_page_if_existing_pages_cannot_hold_the_image() {
         let mut editor = SliceEditor::new(Size::new(190, 554));
-        editor.confirm();
-        editor.confirm();
+        editor.commit_cut();
+        editor.commit_cut();
         editor.select(0);
         editor.move_guide(100);
-        editor.confirm();
+        editor.commit_cut();
         assert_eq!(editor.count(), 3);
         assert_eq!(
             editor
@@ -396,14 +401,120 @@ mod tests {
     }
 
     #[test]
+    fn moving_a_cut_back_removes_the_page_added_by_reflow() {
+        let mut editor = SliceEditor::new(Size::new(190, 554));
+        editor.commit_cut();
+        editor.commit_cut();
+        editor.select(0);
+        editor.move_guide(100);
+        editor.commit_cut();
+        assert_eq!(editor.count(), 3);
+
+        editor.select(0);
+        editor.move_guide(277);
+        editor.commit_cut();
+        assert_eq!(editor.count(), 2);
+        assert_eq!(
+            editor
+                .pages()
+                .map(|(_, page)| page.end())
+                .collect::<Vec<_>>(),
+            vec![277, 554]
+        );
+        assert!(editor.export_ready());
+        assert!(editor.can_select(editor.selected()));
+        assert_eq!(editor.current(), editor.slices[1].region());
+    }
+
+    #[test]
+    fn moving_the_cut_to_the_image_end_removes_the_trailing_page() {
+        let mut editor = SliceEditor::new(Size::new(190, 530));
+        editor.move_guide(260);
+        editor.commit_cut();
+        editor.move_guide(400);
+        editor.commit_cut();
+        editor.commit_cut();
+        assert_eq!(editor.count(), 3);
+
+        editor.select(1);
+        editor.move_guide(530);
+        assert_eq!(editor.draft(), 530);
+        editor.commit_cut();
+        assert_eq!(editor.count(), 2);
+        assert_eq!(editor.selected(), 1);
+        assert_eq!(editor.current().y, 260);
+        assert_eq!(editor.current().height, 270);
+        assert!(editor.export_ready());
+        assert!(!editor.commit_cut());
+        assert!(editor.pages().all(|(_, page)| page.rectangle.height > 0));
+    }
+
+    #[test]
+    fn moving_a_cut_across_an_internal_page_removes_that_page() {
+        let mut editor = SliceEditor::new(Size::new(190, 700));
+        for end in [100, 150, 200, 300, 500, 700] {
+            editor.move_guide(end);
+            assert!(editor.commit_cut());
+        }
+        assert_eq!(editor.count(), 6);
+        editor.select(1);
+        editor.move_guide(300);
+        assert_eq!(editor.draft(), 300);
+        assert!(editor.commit_cut());
+        assert_eq!(editor.count(), 4);
+        assert_eq!(
+            editor
+                .pages()
+                .map(|(_, page)| page.end())
+                .collect::<Vec<_>>(),
+            vec![100, 300, 500, 700]
+        );
+        assert_eq!(editor.selected(), 2);
+        assert_eq!(editor.current().y, 300);
+        assert!(editor.export_ready());
+        let mut top = 0;
+        for (_, page) in editor.pages() {
+            assert_eq!(page.y_offset, top);
+            assert!((1..=editor.page_height()).contains(&page.rectangle.height));
+            top = page.end();
+        }
+        assert_eq!(top, 700);
+    }
+
+    #[test]
+    fn moving_a_cut_past_saved_pages_keeps_the_remaining_region_selected() {
+        let mut editor = SliceEditor::new(Size::new(190, 700));
+        for end in [100, 200, 300] {
+            editor.move_guide(end);
+            assert!(editor.commit_cut());
+        }
+        editor.select(1);
+        editor.move_guide(350);
+        assert!(editor.commit_cut());
+        assert_eq!(editor.count(), 3);
+        assert_eq!(
+            editor
+                .pages()
+                .map(|(_, page)| page.end())
+                .collect::<Vec<_>>(),
+            vec![100, 350]
+        );
+        assert_eq!(editor.selected(), 2);
+        assert_eq!(editor.current().y, 350);
+        assert_eq!(editor.current().height, 350);
+        assert_eq!(editor.pending(), Some((2, editor.current())));
+        assert!(!editor.export_ready());
+    }
+
+    #[test]
     fn first_cut_can_move_when_the_following_page_is_full() {
         let mut slices = SliceEditor::new(Size::new(190, 700));
-        slices.confirm();
-        slices.confirm();
+        slices.commit_cut();
+        slices.commit_cut();
         slices.select(0);
         slices.move_guide(1);
         assert_eq!(slices.draft(), 1);
-        slices.confirm();
+        slices.commit_cut();
         assert_eq!(slices.slices[0].end(), 1);
         assert_eq!(slices.slices[1].end(), 278);
         assert_eq!(slices.end(), 554);

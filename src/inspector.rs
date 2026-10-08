@@ -83,9 +83,16 @@ fn cut_detection(detection: &CutDetection) -> Element<'_, Message> {
         CutDetection::Mixed | CutDetection::Failed(_) => widget::text::warning,
         _ => widget::text::secondary,
     });
-    widget::column![widget::text::body("Cut detection"), label]
-        .spacing(theme::spacing().space_xxs)
-        .into()
+    widget::column![
+        widget::tooltip(
+            widget::text::body("Cut detection"),
+            "checks whether all pixels on the line is roughly the same color",
+            widget::tooltip::Position::Top
+        ),
+        label
+    ]
+    .spacing(theme::spacing().space_xxs)
+    .into()
 }
 
 fn cut_actions(slices: &SliceEditor) -> Element<'static, Message> {

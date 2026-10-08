@@ -22,15 +22,13 @@ pub fn scroll_to(start: u32, scale: f32) -> iced::Task<Message> {
     )
 }
 
-pub fn image<'a>(
+pub fn preview<'a>(
     allocation: &'a widget::image::Allocation,
     slices: &'a SliceEditor,
     zoom: f32,
     fit_width: bool,
 ) -> Element<'a, Message> {
-    let region = slices
-        .current()
-        .expect("the picker requires a current page");
+    let region = slices.current();
     widget::responsive(move |available| {
         let geometry =
             PreviewGeometry::configured(region, available, slices.page_height(), fit_width)
@@ -39,7 +37,7 @@ pub fn image<'a>(
         let prefix = segments.prefix.map(|(region, size)| {
             let image = segment(allocation, region, size);
             let overlay =
-                widget::canvas(HistoryRules::before(slices, region.height, geometry.scale))
+                widget::canvas(NonActiveRules::new(slices, region.height, geometry.scale))
                     .width(size.width)
                     .height(size.height);
             widget::stack![image, overlay]
@@ -54,11 +52,7 @@ pub fn image<'a>(
         })
         .width(segments.page_size.width)
         .height(segments.page_size.height);
-        let hint = cut_hint(
-            slices.cut_label(),
-            geometry.rule_bounds(slices.draft(), segments.page_size.height),
-        );
-        let page = widget::stack![page, overlay, hint];
+        let page = widget::stack![page, overlay];
         let remainder = segments
             .remainder
             .map(|(region, size)| segment(allocation, region, size));
@@ -97,20 +91,6 @@ pub fn zoom<'a>(
             .center(Fill)
     })
     .into()
-}
-
-fn cut_hint(label: String, bounds: Rectangle) -> Element<'static, Message> {
-    let target = widget::space()
-        .width(bounds.width)
-        .height(bounds.height)
-        .apply(|target| {
-            widget::tooltip(
-                target,
-                widget::text::caption(label),
-                widget::tooltip::Position::Top,
-            )
-        });
-    widget::column![widget::space().height(bounds.y), target].into()
 }
 
 fn segment(
@@ -368,8 +348,8 @@ impl widget::canvas::Program<Message> for GuideOverlay {
         bounds: Rectangle,
         _cursor: iced::mouse::Cursor,
     ) -> Vec<widget::canvas::Geometry> {
-        let mut frame = widget::canvas::Frame::new(renderer, bounds.size());
         use widget::canvas::{LineDash, Path, Stroke, Text};
+        let mut frame = widget::canvas::Frame::new(renderer, bounds.size());
         let limit_y = (self.limit_y - 1.0).max(0.0);
         frame.stroke(
             &Path::line(Point::new(0.0, limit_y), Point::new(bounds.width, limit_y)),
@@ -396,15 +376,15 @@ impl widget::canvas::Program<Message> for GuideOverlay {
     }
 }
 
-struct HistoryRules {
+struct NonActiveRules {
     rules: Vec<(usize, f32)>,
 }
 
-impl HistoryRules {
-    fn before(slices: &SliceEditor, source_end: u32, scale: f32) -> Self {
+impl NonActiveRules {
+    fn new(slices: &SliceEditor, source_end: u32, scale: f32) -> Self {
         let rules = slices
             .pages()
-            .filter(|(_, page)| page.region().y + page.rectangle.height <= source_end)
+            .filter(|(_, page)| page.end() <= source_end)
             .map(|(index, page)| {
                 (
                     index,
@@ -416,7 +396,7 @@ impl HistoryRules {
     }
 }
 
-impl widget::canvas::Program<Message> for HistoryRules {
+impl widget::canvas::Program<Message> for NonActiveRules {
     type State = ();
     fn update(
         &self,
@@ -451,7 +431,7 @@ impl widget::canvas::Program<Message> for HistoryRules {
                 .iter()
                 .any(|(_, y)| (p.y - y).abs() <= RULE_HIT_PX)
         }) {
-            iced::mouse::Interaction::Pointer
+            iced::mouse::Interaction::Move
         } else {
             iced::mouse::Interaction::None
         }

@@ -59,7 +59,7 @@ fn inspect(pixels: &Buffer, cut: u32) -> CutDetection {
 fn inspect_line(row: &[u8], tolerance: f32) -> CutDetection {
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
-    for pixel in row.chunks_exact(4) {
+    for pixel in row.as_chunks::<4>().0 {
         let color = oklab(pixel);
         for channel in 0..3 {
             min[channel] = min[channel].min(color[channel]);
