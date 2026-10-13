@@ -9,4 +9,5 @@ dev-web:
 build-web:
     dx build --platform web --release --cargo-args="-Zbuild-std=std,panic_abort"
 publish:
+    cp _headers target/dx/pagecut/release/web/public/_headers
     nix shell nixpkgs#wrangler --command wrangler pages deploy target/dx/pagecut/release/web/public --project-name pagecut --branch main --commit-dirty=true
