@@ -2,6 +2,58 @@
 
 Follow these guidelines when changing Longshot or its shared UI components.
 
+## WebAssembly environment
+
+Run `nix develop` (or `direnv reload` in an existing shell) to use the patched
+DX CLI and relevant `just` commands.
+
+The `web` Cargo profile uses LLVM because the native `dev` profile uses
+Cranelift, which does not support Wasm. Use `just dev-web` for development and `just build-web`
+for production.
+
+Browser threads require the atomics and shared-memory flags in `.cargo/config.toml`
+and rebuilding `std` using nightly Rust with `rust-src`. Both web recipes pass
+`-Zbuild-std=std,panic_abort`; the dev recipe also enables isolation headers.
+Production hosting must send `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp`.
+
+The patched DX loader skips auto-initialization inside workers, allowing
+`wasm_thread` to supply the shared module and memory. The Rust entry point also skips launching Iced in workers.
+The DX asset reader also accounts for newer linkers placing TLS after ordinary
+data, so threaded builds read asset metadata at the correct file offsets.
+
+The shared `cosmic-theme` crate has an optional `config` feature for desktop
+configuration. `vse-ui` enables it on native targets and uses the built-in
+theme without configuration on Wasm, keeping `cosmic-config` and its native
+file-writing dependencies out of the browser dependency graph. The patches in
+`patches/cosmic-theme-optional-config.patch` and `patches/vse-ui-wasm-theme.patch`
+also apply these changes to the pinned sources used by the Nix package.
+
+## Web icon assets
+
+`freedesktop-icon-assets` is a host proc macro crate. Its `icon!("name")`
+looks up a 16 px SVG from the Cosmic theme, including `COSMIC_ICONS` search
+paths, copies it to the calling crate's `assets/generated/icons` directory,
+and returns an `iced::widget::Svg`. Use the macro directly at the widget call site:
+
+```rust
+widget::icon!("list-add-symbolic").width(20).height(20)
+```
+
+On the web, `Svg::from_url` downloads the asset asynchronously and refreshes the widget when ready.
+
+## Image loading
+
+Image imports read files in 1 MiB chunks and publish actual byte progress through
+Iced's futures channel. Decoding and cut-row inspection use `background::run`:
+Tokio's blocking pool on native, and `wasm_thread` workers with `join_async` on
+Wasm. 
+
+The Iced Wasm allocation patch completes explicit image allocation through the
+renderer upload path. Wasm cannot use the native raster worker callback or a
+blocking GPU wait; queue submission progresses through the browser event loop.
+
+# Coding guidelines
 ## Keep functions at one abstraction level
 
 Each function should have a clear responsibility and operate at that responsibility's abstraction level.
