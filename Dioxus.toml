@@ -4,3 +4,6 @@ publisher = "justsimplykyle"
 
 [application]
 default_platform = "linux"
+
+[web.app]
+title = "Pagecut"

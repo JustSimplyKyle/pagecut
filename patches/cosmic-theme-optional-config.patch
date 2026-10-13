@@ -1,0 +1,271 @@
+--- a/cosmic-theme/Cargo.toml
++++ b/cosmic-theme/Cargo.toml
+@@ -10,7 +10,9 @@
+ rustdoc-args = ["--cfg", "docsrs"]
+
+ [features]
+-default = ["export"]
++default = ["export", "config"]
++# Desktop configuration persistence and subscriptions.
++config = ["dep:cosmic-config"]
+ export = ["serde_json"]
+ no-default = []
+
+@@ -24,7 +26,7 @@
+ ] }
+ ron.workspace = true
+ csscolorparser = { version = "0.8.3", features = ["serde"] }
+-cosmic-config = { path = "../cosmic-config/", default-features = false, features = [
++cosmic-config = { path = "../cosmic-config/", optional = true, default-features = false, features = [
+     "subscription",
+     "macro",
+ ] }
+--- a/cosmic-theme/src/model/mode.rs
++++ b/cosmic-theme/src/model/mode.rs
+@@ -1,13 +1,16 @@
++#[cfg(feature = "config")]
+ use cosmic_config::{Config, ConfigGet, CosmicConfigEntry};
+
+ /// ID for the ThemeMode config
+ pub const THEME_MODE_ID: &str = "com.system76.CosmicTheme.Mode";
+
+ /// The config for cosmic theme dark / light settings
+-#[derive(
+-    Debug, Clone, Copy, PartialEq, Eq, cosmic_config::cosmic_config_derive::CosmicConfigEntry,
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(
++    feature = "config",
++    derive(cosmic_config::cosmic_config_derive::CosmicConfigEntry)
+ )]
+-#[version = 1]
++#[cfg_attr(feature = "config", version = 1)]
+ pub struct ThemeMode {
+     /// The theme dark mode setting.
+     pub is_dark: bool,
+@@ -28,6 +31,7 @@
+ impl ThemeMode {
+     #[inline]
+     /// Check if the theme is currently using dark mode
++    #[cfg(feature = "config")]
+     pub fn is_dark(config: &Config) -> Result<bool, cosmic_config::Error> {
+         config.get::<bool>("is_dark")
+     }
+@@ -35,11 +39,12 @@
+     #[inline]
+     /// The current version of the theme mode config.
+     pub const fn version() -> u64 {
+-        Self::VERSION
++        1
+     }
+
+     #[inline]
+     /// Get the config for the theme mode
++    #[cfg(feature = "config")]
+     pub fn config() -> Result<Config, cosmic_config::Error> {
+         Config::new(THEME_MODE_ID, Self::VERSION)
+     }
+--- a/cosmic-theme/src/model/theme.rs
++++ b/cosmic-theme/src/model/theme.rs
+@@ -1,11 +1,16 @@
++#[cfg(feature = "config")]
++use crate::ThemeMode;
++use crate::color::color_serde;
+ use crate::color::color_serde::option as color_serde_option;
+-use crate::color::{ColorRepr, ColorReprOption, color_serde};
++#[cfg(feature = "config")]
++use crate::color::{ColorRepr, ColorReprOption};
+ use crate::composite::over;
+ use crate::steps::{color_index, get_small_widget_color, get_surface_color, get_text, steps};
+ use crate::{
+     Component, Container, CornerRadii, CosmicPalette, CosmicPaletteInner, DARK_PALETTE,
+-    LIGHT_PALETTE, NAME, Spacing, ThemeMode,
++    LIGHT_PALETTE, NAME, Spacing,
+ };
++#[cfg(feature = "config")]
+ use cosmic_config::{Config, CosmicConfigEntry};
+ use palette::color_difference::Wcag21RelativeContrast;
+ use palette::rgb::Rgb;
+@@ -39,15 +44,12 @@
+
+ #[must_use]
+ /// Cosmic Theme data structure with all colors and its name
+-#[derive(
+-    Clone,
+-    Debug,
+-    Serialize,
+-    Deserialize,
+-    PartialEq,
+-    cosmic_config::cosmic_config_derive::CosmicConfigEntry,
++#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
++#[cfg_attr(
++    feature = "config",
++    derive(cosmic_config::cosmic_config_derive::CosmicConfigEntry)
+ )]
+-#[version = 2]
++#[cfg_attr(feature = "config", version = 2)]
+ pub struct Theme {
+     /// name of the theme
+     pub name: String,
+@@ -128,20 +130,20 @@
+     pub alpha_map: AlphaMap,
+     /// shade color for dialogs
+     #[serde(with = "color_serde")]
+-    #[cosmic_config_entry(with = ColorRepr)]
++    #[cfg_attr(feature = "config", cosmic_config_entry(with = ColorRepr))]
+     pub shade: Srgba,
+     /// accent text colors
+     /// If None, accent base color is the accent text color.
+     #[serde(with = "color_serde_option")]
+-    #[cosmic_config_entry(with = ColorReprOption)]
++    #[cfg_attr(feature = "config", cosmic_config_entry(with = ColorReprOption))]
+     pub accent_text: Option<Srgba>,
+     /// control tint color
+     #[serde(with = "color_serde_option")]
+-    #[cosmic_config_entry(with = ColorReprOption)]
++    #[cfg_attr(feature = "config", cosmic_config_entry(with = ColorReprOption))]
+     pub control_tint: Option<Srgb>,
+     /// text tint color
+     #[serde(with = "color_serde_option")]
+-    #[cosmic_config_entry(with = ColorReprOption)]
++    #[cfg_attr(feature = "config", cosmic_config_entry(with = ColorReprOption))]
+     pub text_tint: Option<Srgb>,
+ }
+
+@@ -167,12 +169,14 @@
+
+     #[inline]
+     /// Get the config for the current dark theme
++    #[cfg(feature = "config")]
+     pub fn dark_config() -> Result<Config, cosmic_config::Error> {
+         Config::new(DARK_THEME_ID, Self::VERSION)
+     }
+
+     #[inline]
+     /// Get the config for the current light theme
++    #[cfg(feature = "config")]
+     pub fn light_config() -> Result<Config, cosmic_config::Error> {
+         Config::new(LIGHT_THEME_ID, Self::VERSION)
+     }
+@@ -756,6 +760,7 @@
+     }
+
+     /// Get the active theme based on the current theme mode.
++    #[cfg(feature = "config")]
+     pub fn get_active() -> Result<Self, (Vec<cosmic_config::Error>, Self)> {
+         (|| {
+             (if ThemeMode::is_dark(&Config::new(Self::id(), Self::VERSION)?)? {
+@@ -778,6 +783,7 @@
+
+         let is_dark = self.is_dark;
+
++        #[cfg(feature = "config")]
+         let mut builder = if is_dark {
+             ThemeBuilder::dark_config()
+                 .ok()
+@@ -789,6 +795,12 @@
+                 .and_then(|h| ThemeBuilder::get_entry(&h).ok())
+                 .unwrap_or_else(ThemeBuilder::light)
+         };
++        #[cfg(not(feature = "config"))]
++        let mut builder = if is_dark {
++            ThemeBuilder::dark()
++        } else {
++            ThemeBuilder::light()
++        };
+         builder = builder.accent(adjusted_c);
+         builder.build()
+     }
+@@ -836,15 +848,12 @@
+
+ #[must_use]
+ /// Helper for building customized themes
+-#[derive(
+-    Clone,
+-    Debug,
+-    Serialize,
+-    Deserialize,
+-    cosmic_config::cosmic_config_derive::CosmicConfigEntry,
+-    PartialEq,
++#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
++#[cfg_attr(
++    feature = "config",
++    derive(cosmic_config::cosmic_config_derive::CosmicConfigEntry)
+ )]
+-#[version = 2]
++#[cfg_attr(feature = "config", version = 2)]
+ pub struct ThemeBuilder {
+     /// override the palette for the builder
+     pub palette: CosmicPalette,
+@@ -854,39 +863,39 @@
+     pub corner_radii: CornerRadii,
+     /// override neutral_tint for the builder
+     #[serde(with = "color_serde_option")]
+-    #[cosmic_config_entry(with = ColorReprOption)]
++    #[cfg_attr(feature = "config", cosmic_config_entry(with = ColorReprOption))]
+     pub neutral_tint: Option<Srgb>,
+     /// override bg_color for the builder
+     #[serde(with = "color_serde_option")]
+-    #[cosmic_config_entry(with = ColorReprOption)]
++    #[cfg_attr(feature = "config", cosmic_config_entry(with = ColorReprOption))]
+     pub bg_color: Option<Srgba>,
+     /// override the primary container bg color for the builder
+     #[serde(with = "color_serde_option")]
+-    #[cosmic_config_entry(with = ColorReprOption)]
++    #[cfg_attr(feature = "config", cosmic_config_entry(with = ColorReprOption))]
+     pub primary_container_bg: Option<Srgba>,
+     /// override the secontary container bg color for the builder
+     #[serde(with = "color_serde_option")]
+-    #[cosmic_config_entry(with = ColorReprOption)]
++    #[cfg_attr(feature = "config", cosmic_config_entry(with = ColorReprOption))]
+     pub secondary_container_bg: Option<Srgba>,
+     /// override the text tint for the builder
+     #[serde(with = "color_serde_option")]
+-    #[cosmic_config_entry(with = ColorReprOption)]
++    #[cfg_attr(feature = "config", cosmic_config_entry(with = ColorReprOption))]
+     pub text_tint: Option<Srgb>,
+     /// override the accent color for the builder
+     #[serde(with = "color_serde_option")]
+-    #[cosmic_config_entry(with = ColorReprOption)]
++    #[cfg_attr(feature = "config", cosmic_config_entry(with = ColorReprOption))]
+     pub accent: Option<Srgb>,
+     /// override the success color for the builder
+     #[serde(with = "color_serde_option")]
+-    #[cosmic_config_entry(with = ColorReprOption)]
++    #[cfg_attr(feature = "config", cosmic_config_entry(with = ColorReprOption))]
+     pub success: Option<Srgb>,
+     /// override the warning color for the builder
+     #[serde(with = "color_serde_option")]
+-    #[cosmic_config_entry(with = ColorReprOption)]
++    #[cfg_attr(feature = "config", cosmic_config_entry(with = ColorReprOption))]
+     pub warning: Option<Srgb>,
+     /// override the destructive color for the builder
+     #[serde(with = "color_serde_option")]
+-    #[cosmic_config_entry(with = ColorReprOption)]
++    #[cfg_attr(feature = "config", cosmic_config_entry(with = ColorReprOption))]
+     pub destructive: Option<Srgb>,
+     #[serde(default)]
+     /// enabled blurred transparency
+@@ -897,7 +906,7 @@
+     pub active_hint: u32,
+     /// cosmic-comp custom window hint color
+     #[serde(with = "color_serde_option")]
+-    #[cosmic_config_entry(with = ColorReprOption)]
++    #[cfg_attr(feature = "config", cosmic_config_entry(with = ColorReprOption))]
+     pub window_hint: Option<Srgb>,
+     #[serde(default)]
+     /// frosted windows
+@@ -1638,12 +1647,14 @@
+
+     #[inline]
+     /// Get the builder for the dark config
++    #[cfg(feature = "config")]
+     pub fn dark_config() -> Result<Config, cosmic_config::Error> {
+         Config::new(DARK_THEME_BUILDER_ID, Self::VERSION)
+     }
+
+     #[inline]
+     /// Get the builder for the light config
++    #[cfg(feature = "config")]
+     pub fn light_config() -> Result<Config, cosmic_config::Error> {
+         Config::new(LIGHT_THEME_BUILDER_ID, Self::VERSION)
+     }

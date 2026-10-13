@@ -1,0 +1,23 @@
+--- a/packages/cli/src/build/assets.rs
++++ b/packages/cli/src/build/assets.rs
+@@ -399,15 +399,19 @@
+
+             // If TLS is present and segment 0 matches TLS size, remove TLS segment
+             // from our file info since it's not where data symbols point
++            // Newer linkers place TLS after ordinary data instead. In that layout
++            // TLS does not shift the base address of the first data segment.
++            let mut tls_prefix_size = 0;
+             if tls_size > 0 && !segment_file_info.is_empty() && segment_file_info[0].1 == tls_size {
+                 segment_file_info.remove(0);
++                tls_prefix_size = tls_size;
+             }
+
+             // Align TLS size up to 4 bytes to match linker's memory layout.
+             // The linker aligns main data to a 4-byte boundary after TLS, so symbol
+             // addresses are calculated from (memory_base + aligned_tls_size).
+             // However, file segments are stored without this alignment padding.
+-            let tls_aligned = (tls_size + 3) & !3;
++            let tls_aligned = (tls_prefix_size + 3) & !3;
+
+             // Use __memory_base if available (set by linker in release builds),
+             // otherwise fall back to 0x100000 (debug builds default)

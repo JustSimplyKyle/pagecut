@@ -45,6 +45,7 @@
           inherit system overlays;
         };
         rustToolchain = pkgs.rust-bin.nightly.latest.default.override {
+          targets = [ "wasm32-unknown-unknown" ];
           extensions = [
             "rust-src"
             "rust-analyzer"
@@ -67,6 +68,8 @@
           patches = (old.patches or [ ]) ++ [
             ./patches/dioxus-cli-cranelift-asm-objects.patch
             ./patches/dioxus-cli-cargo-build-layout.patch
+            ./patches/dioxus-cli-wasm-worker-init.patch
+            ./patches/dioxus-cli-wasm-asset-tls.patch
           ];
         });
         # Recreate the path layout without depending on local checkouts. Keep
@@ -77,17 +80,18 @@
               nativeBuildInputs = [ pkgs.patch ];
             }
             ''
-              mkdir -p "$out/longshot" "$out/videosubextract/crates"
+              mkdir -p "$out/pagecut" "$out/videosubextract/crates"
               cp -r ${
                 pkgs.lib.fileset.toSource {
                   root = ./.;
                   fileset = pkgs.lib.fileset.unions [
                     ./Cargo.toml
                     ./Cargo.lock
+                    ./crates
                     ./src
                   ];
                 }
-              }/. "$out/longshot/"
+              }/. "$out/pagecut/"
               cp -r ${iced-source} "$out/iced-dioxus"
               cp ${vse-source}/Cargo.toml "$out/videosubextract/"
               cp -r ${vse-source}/crates/vse-ui "$out/videosubextract/crates/"
@@ -97,7 +101,12 @@
               cp -r ${cosmic-iced-source} "$out/libcosmic/iced"
               chmod -R u+w "$out"
               patch -d "$out/videosubextract" -p1 < ${./patches/vse-ui-local.patch}
+              patch -d "$out/videosubextract" -p1 < ${./patches/vse-ui-wasm-theme.patch}
+              patch -d "$out/videosubextract" -p1 < ${./patches/vse-ui-web-icons.patch}
+              patch -d "$out/libcosmic" -p1 < ${./patches/cosmic-theme-optional-config.patch}
               patch -d "$out/iced-dioxus" -p1 < ${./patches/iced-keyed-column.patch}
+              patch -d "$out/iced-dioxus" -p1 < ${./patches/iced-svg-url.patch}
+              patch -d "$out/iced-dioxus" -p1 < ${./patches/iced-wasm-image-allocation.patch}
             '';
         runtimeLibraries = with pkgs; [
           wayland
@@ -115,15 +124,16 @@
           pname = cargoToml.package.name;
           version = cargoToml.package.version;
           src = packageSource;
-          cargoRoot = "longshot";
-          buildAndTestSubdir = "longshot";
-          cargoHash = "sha256-vcoGj4QDyM0uCMggvghDQjDdSpq/9n/TLXjflw+wW6c=";
+          cargoRoot = "pagecut";
+          buildAndTestSubdir = "pagecut";
+          cargoHash = pkgs.lib.fakeHash;
           nativeBuildInputs = [
             pkgs.pkg-config
             pkgs.makeWrapper
             pkgs.copyDesktopItems
           ];
           buildInputs = [ pkgs.openssl ];
+          COSMIC_ICONS = "${pkgs.cosmic-icons}/share";
           desktopItems = [
             (pkgs.makeDesktopItem {
               name = cargoToml.package.name;
@@ -161,6 +171,10 @@
             pkgs.mold
             clangMold
             dioxusCli
+            # Must match iced's pinned wasm-bindgen dependency exactly.
+            pkgs.wasm-bindgen-cli_0_2_108
+            pkgs.esbuild
+            pkgs.binaryen
             pkgs.samply
             pkgs.wayland
             pkgs.libxkbcommon
@@ -171,6 +185,7 @@
           ];
           LD_LIBRARY_PATH = "$LD_LIBRARY_PATH:${builtins.toString (pkgs.lib.makeLibraryPath buildInputs)}";
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
+          COSMIC_ICONS = "${pkgs.cosmic-icons}/share";
           # LIBCLANG_PATH="${pkgs.libclang.lib}/lib";
 
         };

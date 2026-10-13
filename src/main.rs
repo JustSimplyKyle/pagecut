@@ -2,13 +2,16 @@
 
 use std::convert::Infallible;
 use std::ops::FromResidual;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use vse_ui::iced::{self, Fill, Task, advanced::graphics::image::Buffer};
 use vse_ui::{Apply, Element, theme, widget};
 
+mod background;
 mod blank;
+mod image_load;
 mod inspector;
 mod layout;
 mod metrics;
@@ -20,6 +23,12 @@ mod slices;
 use slices::SliceEditor;
 
 fn main() -> iced::Result {
+    // wasm_thread initializes this module again in each worker.
+    #[cfg(target_arch = "wasm32")]
+    if wasm_thread::is_web_worker_thread() {
+        return Ok(());
+    }
+
     iced::application(App::new, App::update, App::view)
         .title("Pagecut")
         .theme(|_: &App| theme::iced_theme())
@@ -35,6 +44,8 @@ struct App {
     slice_editor: Option<SliceEditor>,
     preview_scale: f32,
     status: Option<String>,
+    opening: bool,
+    reading: Option<image_load::ReadProgress>,
     exporting: Option<pdf::ExportProgress>,
     pixels: Option<Arc<Buffer>>,
     cut_detection: blank::CutDetection,
@@ -50,10 +61,11 @@ struct App {
 #[derive(Debug, Clone)]
 enum Message {
     PickImage,
-    ImagePicked(Option<PathBuf>),
+    ImageReadProgress(image_load::ReadProgress),
+    ImagePicked(Result<Option<Vec<u8>>, Arc<eyre::Report>>),
     ExportPdf,
     PdfProgress(pdf::ExportProgress),
-    PdfExported(Result<Option<PathBuf>, Arc<eyre::Report>>),
+    PdfExported(Result<Option<String>, Arc<eyre::Report>>),
     DismissError,
     AllocateImage(widget::image::Handle),
     ImageAllocated(u64, widget::image::Allocation),
@@ -141,6 +153,7 @@ impl App {
     }
 
     fn new() -> (Self, Task<Message>) {
+        #[cfg(not(target_arch = "wasm32"))]
         let task = std::env::args_os()
             .nth(1)
             .map(PathBuf::from)
@@ -148,6 +161,8 @@ impl App {
             .map_or_else(Task::none, |handle| {
                 Task::done(Message::AllocateImage(handle))
             });
+        #[cfg(target_arch = "wasm32")]
+        let task = Task::none();
 
         (
             Self {
@@ -157,6 +172,8 @@ impl App {
                 slice_editor: None,
                 preview_scale: 1.0,
                 status: None,
+                opening: false,
+                reading: None,
                 exporting: None,
                 pixels: None,
                 cut_detection: blank::CutDetection::Waiting,
@@ -200,23 +217,52 @@ impl App {
     fn react(&mut self, message: Message) -> Event {
         match message {
             Message::PickImage => {
+                if self.opening {
+                    return Task::none().into();
+                }
+                self.opening = true;
                 self.status = Some("Choose an image…".into());
-                Task::perform(
-                    async {
-                        rfd::AsyncFileDialog::new()
-                            .set_title("Open image")
-                            .add_filter("Images", &["png", "jpg", "jpeg"])
-                            .pick_file()
+                Task::run(
+                    iced::stream::channel(32, async |mut output| {
+                        use iced::futures::SinkExt;
+                        let result = async {
+                            let Some(file) = rfd::AsyncFileDialog::new()
+                                .set_title("Open image")
+                                .add_filter("Images", &["png", "jpg", "jpeg"])
+                                .pick_file()
+                                .await
+                            else {
+                                return Ok(None);
+                            };
+                            let mut progress_output = output.clone();
+                            image_load::read(file, move |progress| {
+                                let _ =
+                                    progress_output.try_send(Message::ImageReadProgress(progress));
+                            })
                             .await
-                            .map(|file| file.path().to_path_buf())
-                    },
-                    Message::ImagePicked,
+                            .map(Some)
+                        }
+                        .await;
+                        let _ = output
+                            .send(Message::ImagePicked(result.map_err(Arc::new)))
+                            .await;
+                    }),
+                    std::convert::identity,
                 )
             }
-            Message::ImagePicked(path) => {
+            Message::ImageReadProgress(progress) => {
+                if self.opening {
+                    self.reading = Some(progress);
+                    self.status = Some(progress.label());
+                }
+                Task::none()
+            }
+            Message::ImagePicked(result) => {
+                self.opening = false;
+                self.reading = None;
                 self.status = None;
-                return self.update(Message::AllocateImage(widget::image::Handle::from_path(
-                    path?,
+                return self.update(Message::AllocateImage(widget::image::Handle::from_bytes(
+                    result??,
                 )));
             }
             Message::ExportPdf => {
@@ -263,7 +309,7 @@ impl App {
             }
             Message::PdfExported(result) => {
                 self.exporting = None;
-                self.status = format!("PDF saved: {}", result??.display()).apply(Some);
+                self.status = format!("PDF saved: {}", result??).apply(Some);
                 Task::none()
             }
             Message::DismissError => {
@@ -274,7 +320,7 @@ impl App {
                 self.output = self.settings();
                 self.load_id += 1;
                 let load_id = self.load_id;
-                self.status = Some("Loading image…".into());
+                self.status = Some("Decoding image…".into());
                 self.source = Some(handle.clone());
                 self.image = None;
                 self.error = None;
@@ -283,15 +329,7 @@ impl App {
                 self.undo.clear();
                 self.redo.clear();
                 Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            let pixels = iced::advanced::graphics::image::load(&handle)?;
-                            Ok::<_, eyre::Report>(Arc::new(pixels))
-                        })
-                        .await
-                        .map_err(eyre::Report::from)?
-                        .map_err(Arc::new)
-                    },
+                    async move { image_load::decode(handle).await.map_err(Arc::new) },
                     move |result| match result {
                         Ok(pixels) => Message::PixelsLoaded(load_id, pixels),
                         Err(error) => Message::ImageLoadFailed(load_id, error),
@@ -327,6 +365,7 @@ impl App {
                     pixels.as_raw().clone(),
                 );
                 self.pixels = Some(pixels);
+                self.status = Some("Preparing image preview…".into());
                 widget::image::allocate(handle).map(move |result| match result {
                     Ok(allocation) => Message::ImageAllocated(load_id, allocation),
                     Err(error) => Message::ImageLoadFailed(load_id, Arc::new(error.into())),
@@ -486,6 +525,15 @@ impl App {
                 .style(theme::container::card)
                 .into(),
             )
+        } else if let Some(progress) = self.reading {
+            Some(
+                widget::column![
+                    widget::text::body(progress.label()),
+                    widget::progress_bar(0.0..=1.0, progress.fraction()),
+                ]
+                .spacing(theme::spacing().space_xxs)
+                .into(),
+            )
         } else {
             self.status
                 .as_deref()
@@ -504,7 +552,7 @@ impl App {
         };
         widget::row![
             widget::text::title3("Pagecut"),
-            widget::text("│").style(widget::text::secondary),
+            widget::container(widget::rule::vertical(1)).height(16),
             widget::text(title).style(widget::text::secondary)
         ]
         .spacing(theme::spacing().space_s)
@@ -514,16 +562,34 @@ impl App {
     }
 
     fn toolbar(&self) -> Element<'_, Message> {
-        let can_export = self.exporting.is_none()
+        let can_export = !self.opening
+            && self.exporting.is_none()
             && self.error.is_none()
             && self.source.is_some()
             && self
                 .slice_editor
                 .as_ref()
                 .is_some_and(SliceEditor::export_ready);
-        let open = self.control("Open…", Some(Message::PickImage));
-        let undo = self.control("↶", (!self.undo.is_empty()).then_some(Message::Undo));
-        let redo = self.control("↷", (!self.redo.is_empty()).then_some(Message::Redo));
+        let open = self.control(
+            widget::text("Open…"),
+            (!self.opening).then_some(Message::PickImage),
+        );
+        let undo = widget::tooltip(
+            self.control(
+                widget::icon!("edit-undo-symbolic"),
+                (!self.undo.is_empty()).then_some(Message::Undo),
+            ),
+            "Undo",
+            widget::tooltip::Position::Bottom,
+        );
+        let redo = widget::tooltip(
+            self.control(
+                widget::icon!("edit-redo-symbolic"),
+                (!self.redo.is_empty()).then_some(Message::Redo),
+            ),
+            "Redo",
+            widget::tooltip::Position::Bottom,
+        );
         let settings = self.settings();
         let output = widget::row![
             widget::pick_list(
@@ -548,9 +614,9 @@ impl App {
         .spacing(theme::spacing().space_xs)
         .align_y(iced::Alignment::Center);
         let zoom = widget::row![
-            self.control("−", Some(Message::Zoom(-1))),
+            self.control(widget::icon!("list-remove-symbolic"), Some(Message::Zoom(-1))),
             widget::text(self.zoom_label()),
-            self.control("＋", Some(Message::Zoom(1)))
+            self.control(widget::icon!("list-add-symbolic"), Some(Message::Zoom(1)))
         ]
         .spacing(theme::spacing().space_xxs)
         .align_y(iced::Alignment::Center);
@@ -568,7 +634,15 @@ impl App {
             undo,
             redo,
             output,
-            self.control("↔  Fit width", Some(Message::FitWidth)),
+            self.control(
+                widget::row![
+                    widget::icon!("zoom-fit-best-symbolic"),
+                    widget::text("Fit width")
+                ]
+                .spacing(theme::spacing().space_xxs)
+                .align_y(iced::Alignment::Center),
+                Some(Message::FitWidth),
+            ),
             zoom,
             widget::space().width(Fill),
             export
@@ -605,9 +679,12 @@ impl App {
             self.redo.clear();
         }
     }
-    fn control<'a>(&self, label: &'a str, action: Option<Message>) -> Element<'a, Message> {
-        widget::text(label)
-            .apply(widget::button)
+    fn control<'a>(
+        &self,
+        content: impl Into<Element<'a, Message>>,
+        action: Option<Message>,
+    ) -> Element<'a, Message> {
+        widget::button(content)
             .padding(theme::spacing().space_xxs)
             .on_press_maybe(action)
             .into()
@@ -644,7 +721,7 @@ impl App {
     ) -> Element<'a, Message> {
         let header = widget::row![
             widget::text::title3("Editor"),
-            widget::text("│").style(widget::text::secondary),
+            widget::container(widget::rule::vertical(1)).height(16),
             widget::text::caption("Drag the line to adjust the page break")
                 .style(widget::text::secondary)
         ]
@@ -713,6 +790,32 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn image_reads_clear_busy_state_on_cancel_or_failure() {
+        let (mut app, _) = super::App::new();
+        app.opening = true;
+        let progress = super::image_load::ReadProgress {
+            completed: 4,
+            total: 8,
+        };
+        let _ = app.update(super::Message::ImageReadProgress(progress));
+        assert_eq!(app.reading, Some(progress));
+        let _ = app.update(super::Message::PickImage);
+        assert_eq!(app.reading, Some(progress));
+        let _ = app.update(super::Message::ImagePicked(Ok(None)));
+        assert!(!app.opening);
+        assert!(app.reading.is_none());
+        assert!(app.status.is_none());
+        let _ = app.update(super::Message::ImageReadProgress(progress));
+        assert!(app.reading.is_none());
+        app.opening = true;
+        let _ = app.update(super::Message::ImagePicked(Err(std::sync::Arc::new(
+            eyre::eyre!("read failed"),
+        ))));
+        assert!(!app.opening);
+        assert!(app.reading.is_none());
+    }
+
     use super::*;
     #[test]
     fn undo_and_redo_restore_saved_boundaries() {
@@ -799,7 +902,7 @@ mod tests {
         let _ = app.update(Message::NudgeGuide(-1));
         assert!(app.export_status().is_some());
         assert_eq!(app.exporting, Some(pdf::ExportProgress::PreparingDocument));
-        let _ = app.update(Message::PdfExported(Ok(Some(PathBuf::from("notes.pdf")))));
+        let _ = app.update(Message::PdfExported(Ok(Some("notes.pdf".into()))));
         assert!(app.exporting.is_none());
         assert!(app.status.as_ref().unwrap().contains("PDF saved"));
     }

@@ -1,0 +1,21 @@
+--- a/packages/cli/src/build/web.rs
++++ b/packages/cli/src/build/web.rs
+@@ -293,7 +293,9 @@
+             r#"
+ globalThis.__wasm_split_main_initSync = initSync;
+
+-// Actually perform the load
++// Workers initialize explicitly with the shared module and memory.
++// Auto-loading here would initialize a separate memory before wasm_thread can act.
++if (typeof WorkerGlobalScope === "undefined" || !(globalThis instanceof WorkerGlobalScope)) {{
+ __wbg_init({{module_or_path: "/{}/{wasm_path}"}}).then((wasm) => {{
+     // assign this module to be accessible globally
+     globalThis.__dx_mainWasm = wasm;
+@@ -305,6 +307,7 @@
+         wasm.main();
+     }}
+ }});
++}}
+ "#,
+             self.base_path_or_default(),
+         )?;

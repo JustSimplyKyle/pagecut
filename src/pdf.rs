@@ -50,8 +50,8 @@ pub async fn choose_and_export(
     pixels: Arc<Buffer>,
     pages: Vec<Slice>,
     settings: PageSettings,
-    progress: impl Fn(ExportProgress) + Send + 'static,
-) -> Result<Option<PathBuf>> {
+    progress: impl Fn(ExportProgress) + Send + Sync + 'static,
+) -> Result<Option<String>> {
     let mut dialog = rfd::AsyncFileDialog::new()
         .set_title("Export PDF")
         .add_filter("PDF", &["pdf"])
@@ -64,16 +64,26 @@ pub async fn choose_and_export(
     let Some(file) = dialog.save_file().await else {
         return Ok(None);
     };
-    let mut target = file.path().to_path_buf();
-    if target.extension().is_none() {
-        target.set_extension("pdf");
-    }
-    tokio::task::spawn_blocking(move || {
-        write_with_progress(&source, &pixels, &pages, &target, settings, &progress)?;
-        Ok(Some(target))
+
+    let progress = Arc::new(progress);
+    progress(ExportProgress::PreparingDocument);
+    let pdf = render_in_background(pixels, pages, settings, progress.clone()).await?;
+    progress(ExportProgress::SavingFile);
+    file.write(&pdf).await?;
+
+    Ok(Some(file.file_name()))
+}
+
+async fn render_in_background(
+    pixels: Arc<Buffer>,
+    pages: Vec<Slice>,
+    settings: PageSettings,
+    progress: Arc<impl Fn(ExportProgress) + Send + Sync + 'static>,
+) -> Result<Vec<u8>> {
+    crate::background::run("pdf-export", move || {
+        render_with_progress(&pixels, &pages, settings, &|update| progress(update))
     })
     .await
-    .wrap_err("PDF export worker failed")?
 }
 
 fn default_name(source: &Handle) -> String {

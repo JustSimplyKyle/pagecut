@@ -1,0 +1,12 @@
+--- a/crates/vse-ui/Cargo.toml
++++ b/crates/vse-ui/Cargo.toml
+@@ -11,5 +11,9 @@
+ indexmap = "2.14.2"
+ springs = "0.1.2"
+
++# Keep desktop configuration out of browser builds.
++[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
++cosmic-theme = { path = "../../../libcosmic/cosmic-theme", default-features = false, features = ["config"] }
++
+ [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+ freedesktop-icons = { package = "cosmic-freedesktop-icons", git = "https://github.com/pop-os/freedesktop-icons" }

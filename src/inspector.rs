@@ -14,7 +14,7 @@ pub fn cut<'a>(
     let controls = widget::column![
         cut_preview(allocation, slices),
         cut_position(slices),
-        widget::text::caption("↑/↓  1 px    Shift  5 px").style(widget::text::secondary),
+        widget::text::caption("Up/Down  1 px    Shift  5 px").style(widget::text::secondary),
         widget::rule::horizontal(1),
         cut_detection(detection),
         widget::rule::horizontal(1),
@@ -57,11 +57,11 @@ fn cut_preview<'a>(
 }
 
 fn cut_position(slices: &SliceEditor) -> Element<'_, Message> {
-    let minus = widget::text("−")
+    let minus = widget::icon!("list-remove-symbolic")
         .apply(widget::button)
         .padding(theme::spacing().space_xxs)
         .on_press(Message::NudgeGuide(-1));
-    let plus = widget::text("＋")
+    let plus = widget::icon!("list-add-symbolic")
         .apply(widget::button)
         .padding(theme::spacing().space_xxs)
         .on_press(Message::NudgeGuide(1));

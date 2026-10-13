@@ -3,6 +3,10 @@ name = "pagecut"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = ["crates/freedesktop-icon-assets"]
+resolver = "3"
+
 [dependencies]
 vse-ui = { path = "../videosubextract/crates/vse-ui" }
 iced = { path = "../iced-dioxus", default-features = false }
@@ -10,12 +14,23 @@ iced = { path = "../iced-dioxus", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 apply = "0.3.0"
 # Match VideoSubExtract's working Linux portal backend.
-rfd = "=0.16.0"
+rfd = { version = "=0.16.0", features = ["file-handle-inner"] }
 eyre = "0.6.14"
 pdf-writer = "0.15"
 flate2 = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["rt", "time"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm_thread = "0.3.3"
+iced = { path = "../iced-dioxus", default-features = false, features = ["wgpu", "webgl", "fira-sans"] }
+manganis = "=0.7.10"
+dioxus-cli-config = { version = "=0.7.10", features = ["web"] }
+js-sys = "=0.3.85"
+wasm-bindgen = "=0.2.108"
+wasm-bindgen-futures = "=0.4.58"
+web-sys = { version = "=0.3.85", features = ["Blob", "File"] }
+wasmtimer = "0.4.2"
 
 [features]
 debug = ["iced/debug"]

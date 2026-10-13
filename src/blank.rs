@@ -1,4 +1,4 @@
-//! Perceptual cut-row inspection performed by a blocking worker, never by the UI.
+//! Perceptual cut-row inspection with executor-specific scheduling.
 use std::{sync::Arc, time::Duration};
 use vse_ui::iced::advanced::graphics::image::Buffer;
 
@@ -30,12 +30,15 @@ impl CutDetection {
 }
 
 pub async fn settled(check_id: u64) -> u64 {
+    #[cfg(not(target_arch = "wasm32"))]
     tokio::time::sleep(SETTLE_DELAY).await;
+    #[cfg(target_arch = "wasm32")]
+    wasmtimer::tokio::sleep(SETTLE_DELAY).await;
     check_id
 }
 
 pub async fn check(pixels: Arc<Buffer>, cut: u32) -> CutDetection {
-    match tokio::task::spawn_blocking(move || inspect(&pixels, cut)).await {
+    match crate::background::run("cut-check", move || Ok(inspect(&pixels, cut))).await {
         Ok(result) => result,
         Err(error) => CutDetection::Failed(error.to_string()),
     }
