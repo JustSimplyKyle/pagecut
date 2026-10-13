@@ -1,3 +1,4 @@
+use iced::mouse::{Button as MButton, Event as MEvent};
 use vse_ui::iced::{self, Color, Fill, Point, Rectangle, Size};
 use vse_ui::{Apply, Element, theme, widget};
 
@@ -286,17 +287,19 @@ impl widget::canvas::Program<Message> for GuideOverlay {
         bounds: Rectangle,
         cursor: iced::mouse::Cursor,
     ) -> Option<widget::canvas::Action<Message>> {
-        use iced::mouse::{Button, Event};
+        use iced::touch::Event as TEvent;
         use widget::canvas::Action;
+        use widget::canvas::Event;
 
         match event {
-            widget::canvas::Event::Window(iced::window::Event::RedrawRequested(_))
+            Event::Window(iced::window::Event::RedrawRequested(_))
                 if state.reported_scale != Some(self.scale) =>
             {
                 state.reported_scale = Some(self.scale);
                 Some(Action::publish(Message::PreviewScale(self.scale)))
             }
-            widget::canvas::Event::Mouse(Event::ButtonPressed(Button::Left)) => {
+            Event::Mouse(MEvent::ButtonPressed(MButton::Left))
+            | Event::Touch(TEvent::FingerPressed { .. }) => {
                 let position = cursor.position_in(bounds)?;
                 if self.near_rule(position) {
                     state.dragging = true;
@@ -308,12 +311,17 @@ impl widget::canvas::Program<Message> for GuideOverlay {
                     Action::publish(Message::MoveGuide(self.drag_position(position))).and_capture(),
                 )
             }
-            widget::canvas::Event::Mouse(Event::CursorMoved { .. }) if state.dragging => {
+            Event::Mouse(MEvent::CursorMoved { .. }) | Event::Touch(TEvent::FingerMoved { .. })
+                if state.dragging =>
+            {
                 let position = cursor.position_from(bounds.position())?;
                 let end = self.drag_position(position);
                 Some(Action::publish(Message::MoveGuide(end)).and_capture())
             }
-            widget::canvas::Event::Mouse(Event::ButtonReleased(Button::Left)) if state.dragging => {
+            Event::Mouse(MEvent::ButtonReleased(MButton::Left))
+            | Event::Touch(TEvent::FingerLifted { .. })
+                if state.dragging =>
+            {
                 state.dragging = false;
                 Some(Action::request_redraw().and_capture())
             }
@@ -407,9 +415,7 @@ impl widget::canvas::Program<Message> for NonActiveRules {
     ) -> Option<widget::canvas::Action<Message>> {
         if !matches!(
             event,
-            widget::canvas::Event::Mouse(iced::mouse::Event::ButtonPressed(
-                iced::mouse::Button::Left
-            ))
+            widget::canvas::Event::Mouse(MEvent::ButtonPressed(MButton::Left))
         ) {
             return None;
         }
@@ -619,9 +625,7 @@ mod tests {
             height: 138.5,
             ..Rectangle::default()
         };
-        let event = widget::canvas::Event::Mouse(iced::mouse::Event::ButtonPressed(
-            iced::mouse::Button::Left,
-        ));
+        let event = widget::canvas::Event::Mouse(MEvent::ButtonPressed(MButton::Left));
         let mut state = DragState::default();
         let action = overlay
             .update(
@@ -646,9 +650,7 @@ mod tests {
             height: 138.5,
             ..Rectangle::default()
         };
-        let event = widget::canvas::Event::Mouse(iced::mouse::Event::ButtonPressed(
-            iced::mouse::Button::Left,
-        ));
+        let event = widget::canvas::Event::Mouse(MEvent::ButtonPressed(MButton::Left));
         let mut state = DragState::default();
         let action = overlay
             .update(
@@ -688,7 +690,7 @@ mod tests {
             reported_scale: None,
         };
         let position = Point::new(62.0, 25.0);
-        let event = widget::canvas::Event::Mouse(iced::mouse::Event::CursorMoved { position });
+        let event = widget::canvas::Event::Mouse(MEvent::CursorMoved { position });
         let action = overlay
             .update(
                 &mut state,
@@ -701,9 +703,7 @@ mod tests {
             action.into_inner().0,
             Some(Message::MoveGuide(1150))
         ));
-        let release = widget::canvas::Event::Mouse(iced::mouse::Event::ButtonReleased(
-            iced::mouse::Button::Left,
-        ));
+        let release = widget::canvas::Event::Mouse(MEvent::ButtonReleased(MButton::Left));
         assert!(
             overlay
                 .update(
