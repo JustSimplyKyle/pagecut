@@ -1,5 +1,6 @@
 //! Cut controls; geometry and page calculations belong to the editor and preview.
 use crate::{Message, blank::CutDetection, cut_layer::CutAction, metrics, preview};
+use iced::{Length, alignment::Vertical};
 use vse_ui::{
     Apply, Element,
     iced::{self, Fill},
@@ -18,12 +19,13 @@ pub fn cut<'a>(
     selected: Option<SelectedCut>,
     detection: &'a CutDetection,
     summary: String,
+    style: impl Fn(&vse_ui::Theme) -> widget::container::Style + 'a,
+    compacted: bool,
 ) -> Element<'a, Message> {
     let controls: Element<'a, Message> = match selected {
         Some(selected) => widget::column![
-            cut_preview(allocation, selected),
+            (!compacted).then_some(cut_preview(allocation, selected)),
             cut_position(selected),
-            widget::text::caption("Up/Down  1 px    Shift  5 px").style(widget::text::secondary),
             widget::rule::horizontal(1),
             cut_detection(detection),
             widget::rule::horizontal(1),
@@ -43,7 +45,6 @@ pub fn cut<'a>(
         .into(),
     };
     widget::column![
-        widget::text::title3("Adjust cut"),
         controls,
         widget::rule::horizontal(1),
         widget::text::caption(summary).style(widget::text::secondary),
@@ -51,9 +52,8 @@ pub fn cut<'a>(
     .spacing(theme::spacing().space_s)
     .apply(widget::container)
     .padding(theme::spacing().space_s)
-    .width(metrics::INSPECTOR)
     .height(Fill)
-    .style(theme::container::card)
+    .style(style)
     .into()
 }
 
@@ -85,7 +85,11 @@ fn cut_position(selected: SelectedCut) -> Element<'static, Message> {
         .padding(theme::spacing().space_xxs)
         .on_press(Message::NudgeCut(1));
     widget::row![
-        widget::text::body("Cut position"),
+        widget::tooltip(
+            widget::text::body("Cut position"),
+            "Up/Down  1 px    Shift  5 px",
+            widget::tooltip::Position::FollowCursor
+        ),
         widget::space().width(Fill),
         widget::text::body(format!("{} px", selected.position)),
         minus,
@@ -97,20 +101,58 @@ fn cut_position(selected: SelectedCut) -> Element<'static, Message> {
 }
 
 fn cut_detection(detection: &CutDetection) -> Element<'_, Message> {
-    let label = widget::text::caption(detection.label()).style(match detection {
-        CutDetection::Uniform => widget::text::success,
-        CutDetection::Mixed | CutDetection::Failed(_) => widget::text::warning,
-        _ => widget::text::secondary,
-    });
-    widget::column![
-        widget::tooltip(
-            widget::text::body("Cut detection"),
-            "checks whether all pixels on the line is roughly the same color",
-            widget::tooltip::Position::Top
+    use theme::{COSMIC, color};
+    let (tone, icon) = match detection {
+        CutDetection::Waiting | CutDetection::Checking => (
+            COSMIC.accent.base,
+            widget::icon!("emblem-synchronizing-symbolic"),
         ),
-        label
+        CutDetection::Uniform => (COSMIC.success.base, widget::icon!("object-select-symbolic")),
+        CutDetection::Mixed => (
+            COSMIC.warning.base,
+            widget::icon!("dialog-warning-symbolic"),
+        ),
+        CutDetection::ImageEnd => (COSMIC.accent.base, widget::icon!("go-bottom-symbolic")),
+        CutDetection::Failed(_) => (
+            COSMIC.destructive.base,
+            widget::icon!("dialog-error-symbolic"),
+        ),
+    };
+    let tone = color(tone);
+    let status = widget::row![
+        icon.width(14)
+            .height(14)
+            .style(move |_, _| widget::svg::Style { color: Some(tone) }),
+        widget::text::caption(detection.label()).color(tone),
     ]
     .spacing(theme::spacing().space_xxs)
+    .align_y(Vertical::Center);
+    let card = widget::row![
+        widget::text::body("Cut detection")
+            .font(iced::Font {
+                weight: iced::font::Weight::Semibold,
+                ..iced::Font::DEFAULT
+            })
+            .color(tone),
+        widget::space().width(Length::Fill),
+        status,
+    ]
+    .spacing(theme::spacing().space_xxs)
+    .align_y(Vertical::Center)
+    .apply(widget::container)
+    .padding(theme::spacing().space_xs)
+    .width(Length::Fill)
+    // A tinted card with an outline in the status colour, like a selected row.
+    .style(move |_| widget::container::Style {
+        background: Some(tone.scale_alpha(0.12).into()),
+        border: iced::border::rounded(theme::spacing().space_s),
+        ..widget::container::Style::default()
+    });
+    widget::tooltip(
+        card,
+        "checks whether all pixels on the line is roughly the same color",
+        widget::tooltip::Position::FollowCursor,
+    )
     .into()
 }
 

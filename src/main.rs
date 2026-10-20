@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use vse_ui::iced::{self, Fill, Task, advanced::graphics::image::Buffer};
+use vse_ui::widget::Viewport;
 use vse_ui::{Apply, Element, theme, widget};
 
 mod background;
@@ -18,6 +19,7 @@ mod layout;
 mod metrics;
 mod pdf;
 mod preview;
+mod sheet;
 mod sidebar;
 
 use cut_layer::{CutAction, CutModel};
@@ -61,6 +63,9 @@ struct App {
     fit_width: bool,
     undo: Vec<CutModel>,
     redo: Vec<CutModel>,
+    sheet: widget::bottom_sheet::State,
+    sheet_tab: sheet::Tab,
+    page_model: Option<widget::segmented_button::SingleSelectModel<usize>>,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +95,9 @@ enum Message {
     Paper(layout::Paper),
     Orientation(layout::Orientation),
     Margin(layout::Margin),
+    Sheet(widget::bottom_sheet::Event),
+    SheetTab(sheet::Tab),
+    FitWidthToggled(bool),
 }
 
 impl Message {
@@ -189,6 +197,9 @@ impl App {
                 fit_width: false,
                 undo: Vec::new(),
                 redo: Vec::new(),
+                sheet: widget::bottom_sheet::State::default(),
+                sheet_tab: sheet::Tab::default(),
+                page_model: None,
             },
             task,
         )
@@ -196,6 +207,10 @@ impl App {
     fn update(&mut self, message: Message) -> Event {
         let previous_cut = self.cut_key();
         let event = self.react(message);
+        self.page_model = self
+            .cuts
+            .as_ref()
+            .map(|cuts| sheet::page_model(cuts, self.selected));
         if previous_cut != self.cut_key() {
             Task::batch([event.0, self.schedule_cut_check()]).into()
         } else {
@@ -481,6 +496,18 @@ impl App {
                 };
                 self.repaginate(settings)
             }
+            Message::Sheet(event) => {
+                self.sheet.update(event);
+                Task::none()
+            }
+            Message::SheetTab(tab) => {
+                self.sheet_tab = tab;
+                Task::none()
+            }
+            Message::FitWidthToggled(fit_width) => {
+                self.fit_width = fit_width;
+                Task::none()
+            }
             Message::Margin(margin) => {
                 let settings = layout::PageSettings {
                     margin,
@@ -493,25 +520,29 @@ impl App {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let content = if let Some(error) = &self.error {
-            self.error_screen(error)
-        } else {
-            match (&self.image, &self.cuts) {
-                (Some(allocation), Some(cuts)) => self.picker(allocation, cuts),
-                _ => self.placeholder(),
-            }
-        };
-        widget::column![
-            self.titlebar(),
-            self.toolbar(),
-            self.export_status(),
-            content
-        ]
-        .spacing(theme::spacing().space_xxs)
-        .padding(theme::spacing().space_xxs)
-        .width(Fill)
-        .height(Fill)
-        .into()
+        widget::adaptive(|viewport| {
+            let content = if let Some(error) = &self.error {
+                self.error_screen(error)
+            } else {
+                match (&self.image, &self.cuts) {
+                    (Some(allocation), Some(cuts)) => self.picker(viewport, allocation, cuts),
+                    _ => self.placeholder(),
+                }
+            };
+            let header: Element<'_, Message> = if viewport.is_expanded() {
+                widget::column![self.titlebar(), self.toolbar()]
+                    .spacing(theme::spacing().space_xxs)
+                    .into()
+            } else {
+                self.compact_toolbar()
+            };
+            widget::column![header, self.export_status(), content]
+                .spacing(theme::spacing().space_xxs)
+                .padding(theme::spacing().space_xxs)
+                .width(Fill)
+                .height(Fill)
+                .into()
+        })
     }
 
     fn export_status(&self) -> Option<Element<'_, Message>> {
@@ -553,19 +584,22 @@ impl App {
         }
     }
 
-    fn titlebar(&self) -> Element<'_, Message> {
-        let title = match &self.source {
+    fn file_title(&self) -> String {
+        match &self.source {
             Some(widget::image::Handle::Path(_, path)) => path
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned(),
             _ => "Open an image to begin".into(),
-        };
+        }
+    }
+
+    fn titlebar(&self) -> Element<'_, Message> {
         widget::row![
             widget::text::title3("Pagecut"),
             widget::container(widget::rule::vertical(1)).height(16),
-            widget::text(title).style(widget::text::secondary)
+            widget::text(self.file_title()).style(widget::text::secondary)
         ]
         .spacing(theme::spacing().space_s)
         .padding(theme::spacing().space_xxs)
@@ -573,12 +607,57 @@ impl App {
         .into()
     }
 
-    fn toolbar(&self) -> Element<'_, Message> {
-        let can_export = !self.opening
+    fn can_export(&self) -> bool {
+        !self.opening
             && self.exporting.is_none()
             && self.error.is_none()
             && self.source.is_some()
-            && self.cuts.as_ref().is_some_and(CutModel::fits);
+            && self.cuts.as_ref().is_some_and(CutModel::fits)
+    }
+
+    /// Title, history and export in one row; page setup lives in the bottom sheet.
+    fn compact_toolbar(&self) -> Element<'_, Message> {
+        let title = widget::column![
+            widget::text::title3("Pagecut"),
+            widget::text::caption(self.file_title()).style(widget::text::secondary)
+        ];
+        let open = widget::tooltip(
+            self.control(
+                widget::icon!("document-open-symbolic"),
+                (!self.opening).then_some(Message::PickImage),
+            ),
+            "Open…",
+            widget::tooltip::Position::Bottom,
+        );
+        let undo = self.control(
+            widget::icon!("edit-undo-symbolic"),
+            (!self.undo.is_empty()).then_some(Message::Undo),
+        );
+        let redo = self.control(
+            widget::icon!("edit-redo-symbolic"),
+            (!self.redo.is_empty()).then_some(Message::Redo),
+        );
+        let export = widget::row![
+            widget::icon!("folder-download-symbolic"),
+            widget::text("PDF")
+        ]
+        .spacing(theme::spacing().space_xxs)
+        .align_y(iced::Alignment::Center)
+        .apply(widget::button)
+        .padding([theme::spacing().space_xxs, theme::spacing().space_s])
+        .style(theme::button::suggested)
+        .on_press_maybe(self.can_export().then_some(Message::ExportPdf));
+        widget::row![title, widget::space().width(Fill), open, undo, redo, export]
+            .spacing(theme::spacing().space_xs)
+            .align_y(iced::Alignment::Center)
+            .apply(widget::container)
+            .padding(theme::spacing().space_xs)
+            .style(theme::container::card)
+            .into()
+    }
+
+    fn toolbar(&self) -> Element<'_, Message> {
+        let can_export = self.can_export();
         let open = self.control(
             widget::text("Open…"),
             (!self.opening).then_some(Message::PickImage),
@@ -623,7 +702,10 @@ impl App {
         .spacing(theme::spacing().space_xs)
         .align_y(iced::Alignment::Center);
         let zoom = widget::row![
-            self.control(widget::icon!("list-remove-symbolic"), Some(Message::Zoom(-1))),
+            self.control(
+                widget::icon!("list-remove-symbolic"),
+                Some(Message::Zoom(-1))
+            ),
             widget::text(self.zoom_label()),
             self.control(widget::icon!("list-add-symbolic"), Some(Message::Zoom(1)))
         ]
@@ -732,22 +814,52 @@ impl App {
 
     fn picker<'a>(
         &'a self,
+        viewport: Viewport,
         allocation: &'a widget::image::Allocation,
         cuts: &'a CutModel,
     ) -> Element<'a, Message> {
-        widget::row![
-            sidebar::pages(allocation, cuts, self.selected),
-            Self::editor(allocation, cuts, self.zoom, self.fit_width),
-            inspector::cut(
-                allocation,
-                self.selected_cut(),
-                &self.cut_detection,
-                Self::summary(cuts)
+        let summary = Self::summary(cuts);
+        if viewport.is_expanded() {
+            widget::row![
+                sidebar::pages(allocation, cuts, self.selected),
+                Self::editor(allocation, cuts, self.zoom, self.fit_width),
+                inspector::cut(
+                    allocation,
+                    self.selected_cut(),
+                    &self.cut_detection,
+                    summary,
+                    theme::container::card,
+                    false
+                )
+            ]
+            .spacing(theme::spacing().space_xxs)
+            .height(Fill)
+            .into()
+        } else {
+            let content = match (self.sheet_tab, &self.page_model) {
+                (sheet::Tab::Pages, Some(model)) => {
+                    sheet::pages(allocation, cuts, self.selected, model)
+                }
+                (sheet::Tab::Setup, _) => sheet::setup(self.settings(), self.fit_width),
+                _ => inspector::cut(
+                    allocation,
+                    self.selected_cut(),
+                    &self.cut_detection,
+                    summary,
+                    |_| widget::container::Style::default(),
+                    true,
+                ),
+            };
+            widget::bottom_sheet(
+                &self.sheet,
+                sheet::sheet(self.sheet_tab, content),
+                Self::editor(allocation, cuts, self.zoom, self.fit_width),
             )
-        ]
-        .spacing(theme::spacing().space_xxs)
-        .height(Fill)
-        .into()
+            .minimum_height(120.)
+            .backdrop_height(400.)
+            .on_event(Message::Sheet)
+            .into()
+        }
     }
 
     /// Whether the pages are ready to export, and if not, why.
@@ -774,8 +886,10 @@ impl App {
         let header = widget::row![
             widget::text::title3("Editor"),
             widget::container(widget::rule::vertical(1)).height(16),
-            widget::text::caption("Drag a line to move a cut, click to add one, right-click to remove")
-                .style(widget::text::secondary)
+            widget::text::caption(
+                "Drag a line to move a cut, click to add one, right-click to remove"
+            )
+            .style(widget::text::secondary)
         ]
         .spacing(theme::spacing().space_xs)
         .align_y(iced::Alignment::Center);
