@@ -6,10 +6,13 @@ use std::ops::FromResidual;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use vse_ui::iced::Widget;
 use vse_ui::iced::{self, Fill, Task, advanced::graphics::image::Buffer};
 use vse_ui::widget::Viewport;
 use vse_ui::{Apply, Element, theme, widget};
 
+#[cfg(target_os = "android")]
+mod android;
 mod background;
 mod blank;
 mod cut_layer;
@@ -32,12 +35,24 @@ fn main() -> iced::Result {
         return Ok(());
     }
 
+    run()
+}
+
+fn run() -> iced::Result {
     iced::application(App::new, App::update, App::view)
         .title("Pagecut")
         .theme(|_: &App| theme::iced_theme())
         .subscription(App::subscription)
         .window_size((1440.0, 940.0))
         .run()
+}
+
+/// Tints a symbolic icon for an accent-filled (suggested) button, whose
+/// default icon colour is meant for neutral surfaces.
+fn on_accent<'a>(icon: widget::Svg<'a, vse_ui::Theme>) -> widget::Svg<'a, vse_ui::Theme> {
+    icon.style(|_, _| widget::svg::Style {
+        color: Some(theme::color(theme::COSMIC.accent.on)),
+    })
 }
 
 struct App {
@@ -254,11 +269,16 @@ impl App {
                     iced::stream::channel(32, async |mut output| {
                         use iced::futures::SinkExt;
                         let result = async {
-                            let Some(file) = rfd::AsyncFileDialog::new()
-                                .set_title("Open image")
-                                .add_filter("Images", &["png", "jpg", "jpeg"])
-                                .pick_file()
-                                .await
+                            let Some(file) = loki_file_access::FilePicker::new()
+                                .pick_file_to_open(loki_file_access::PickOptions {
+                                    mime_types: image_load::MIME_TYPES
+                                        .iter()
+                                        .map(|mime| mime.to_string())
+                                        .collect(),
+                                    filter_label: Some("Images".into()),
+                                    multi: false,
+                                })
+                                .await?
                             else {
                                 return Ok(None);
                             };
@@ -519,43 +539,45 @@ impl App {
         .into()
     }
 
-    fn view(&self) -> Element<'_, Message> {
-        widget::adaptive(|viewport| {
+    fn view(&self) -> impl Widget<Message> + '_ {
+        let view = widget::adaptive(|viewport| {
             let content = if let Some(error) = &self.error {
-                self.error_screen(error)
+                self.error_screen(error).boxed()
             } else {
                 match (&self.image, &self.cuts) {
                     (Some(allocation), Some(cuts)) => self.picker(viewport, allocation, cuts),
-                    _ => self.placeholder(),
+                    _ => self.placeholder().boxed(),
                 }
             };
-            let header: Element<'_, Message> = if viewport.is_expanded() {
+            let header = if viewport.is_expanded() {
                 widget::column![self.titlebar(), self.toolbar()]
                     .spacing(theme::spacing().space_xxs)
-                    .into()
+                    .boxed()
             } else {
-                self.compact_toolbar()
+                self.compact_toolbar().boxed()
             };
             widget::column![header, self.export_status(), content]
                 .spacing(theme::spacing().space_xxs)
                 .padding(theme::spacing().space_xxs)
                 .width(Fill)
                 .height(Fill)
-                .into()
-        })
+        });
+        #[cfg(target_os = "android")]
+        let view = widget::container(view).padding(android::system_bars());
+        view
     }
 
     fn export_status(&self) -> Option<Element<'_, Message>> {
-        if let Some(progress) = &self.exporting {
-            let bar = progress
-                .fraction()
-                .map(|value| widget::progress_bar(0.0..=1.0, value));
-            let hint = if matches!(progress, pdf::ExportProgress::ChoosingDestination) {
-                "Select a destination in the save dialog."
-            } else {
-                "Please wait until the PDF has finished saving."
-            };
-            Some(
+        match (&self.exporting, self.reading) {
+            (Some(progress), None) => {
+                let bar = progress
+                    .fraction()
+                    .map(|value| widget::progress_bar(0.0..=1.0, value));
+                let hint = if matches!(progress, pdf::ExportProgress::ChoosingDestination) {
+                    "Select a destination in the save dialog."
+                } else {
+                    "Please wait until the PDF has finished saving."
+                };
                 widget::column![
                     widget::text::title3(progress.label()).style(theme::text::accent),
                     bar,
@@ -566,21 +588,20 @@ impl App {
                 .padding(theme::spacing().space_s)
                 .width(Fill)
                 .style(theme::container::card)
-                .into(),
-            )
-        } else if let Some(progress) = self.reading {
-            Some(
-                widget::column![
-                    widget::text::body(progress.label()),
-                    widget::progress_bar(0.0..=1.0, progress.fraction()),
-                ]
-                .spacing(theme::spacing().space_xxs)
-                .into(),
-            )
-        } else {
-            self.status
+                .boxed()
+                .apply(Some)
+            }
+            (None, Some(progress)) => widget::column![
+                widget::text::body(progress.label()),
+                widget::progress_bar(0.0..=1.0, progress.fraction()),
+            ]
+            .spacing(theme::spacing().space_xxs)
+            .boxed()
+            .apply(Some),
+            _ => self
+                .status
                 .as_deref()
-                .map(|label| widget::text::body(label).into())
+                .map(|label| widget::text::body(label).boxed()),
         }
     }
 
@@ -595,7 +616,7 @@ impl App {
         }
     }
 
-    fn titlebar(&self) -> Element<'_, Message> {
+    fn titlebar(&self) -> impl Widget<Message> + '_ {
         widget::row![
             widget::text::title3("Pagecut"),
             widget::container(widget::rule::vertical(1)).height(16),
@@ -604,7 +625,6 @@ impl App {
         .spacing(theme::spacing().space_s)
         .padding(theme::spacing().space_xxs)
         .align_y(iced::Alignment::Center)
-        .into()
     }
 
     fn can_export(&self) -> bool {
@@ -616,11 +636,19 @@ impl App {
     }
 
     /// Title, history and export in one row; page setup lives in the bottom sheet.
-    fn compact_toolbar(&self) -> Element<'_, Message> {
+    fn compact_toolbar(&self) -> impl Widget<Message> + '_ {
+        // The title fills what the buttons leave and truncates, so the buttons
+        // keep their natural size on narrow screens.
         let title = widget::column![
-            widget::text::title3("Pagecut"),
-            widget::text::caption(self.file_title()).style(widget::text::secondary)
-        ];
+            widget::text::title3("Pagecut")
+                .wrapping(iced::widget::text::Wrapping::None)
+                .ellipsis(iced::widget::text::Ellipsis::End),
+            widget::text::caption(self.file_title())
+                .wrapping(iced::widget::text::Wrapping::None)
+                .ellipsis(iced::widget::text::Ellipsis::End)
+                .style(widget::text::secondary)
+        ]
+        .width(Fill);
         let open = widget::tooltip(
             self.control(
                 widget::icon!("document-open-symbolic"),
@@ -638,7 +666,7 @@ impl App {
             (!self.redo.is_empty()).then_some(Message::Redo),
         );
         let export = widget::row![
-            widget::icon!("folder-download-symbolic"),
+            on_accent(widget::icon!("folder-download-symbolic")),
             widget::text("PDF")
         ]
         .spacing(theme::spacing().space_xxs)
@@ -647,16 +675,15 @@ impl App {
         .padding([theme::spacing().space_xxs, theme::spacing().space_s])
         .style(theme::button::suggested)
         .on_press_maybe(self.can_export().then_some(Message::ExportPdf));
-        widget::row![title, widget::space().width(Fill), open, undo, redo, export]
+        widget::row![title, open, undo, redo, export]
             .spacing(theme::spacing().space_xs)
             .align_y(iced::Alignment::Center)
             .apply(widget::container)
             .padding(theme::spacing().space_xs)
             .style(theme::container::card)
-            .into()
     }
 
-    fn toolbar(&self) -> Element<'_, Message> {
+    fn toolbar(&self) -> impl Widget<Message> + '_ {
         let can_export = self.can_export();
         let open = self.control(
             widget::text("Open…"),
@@ -743,7 +770,6 @@ impl App {
         .apply(widget::container)
         .padding(theme::spacing().space_xs)
         .style(theme::container::card)
-        .into()
     }
 
     fn settings(&self) -> layout::PageSettings {
@@ -789,13 +815,12 @@ impl App {
     }
     fn control<'a>(
         &self,
-        content: impl Into<Element<'a, Message>>,
+        content: impl Widget<Message> + 'a,
         action: Option<Message>,
-    ) -> Element<'a, Message> {
+    ) -> impl Widget<Message> + 'a {
         widget::button(content)
             .padding(theme::spacing().space_xxs)
             .on_press_maybe(action)
-            .into()
     }
 
     fn scroll_to_selected(&self) -> Task<Message> {
@@ -834,21 +859,22 @@ impl App {
             ]
             .spacing(theme::spacing().space_xxs)
             .height(Fill)
-            .into()
+            .boxed()
         } else {
             let content = match (self.sheet_tab, &self.page_model) {
                 (sheet::Tab::Pages, Some(model)) => {
-                    sheet::pages(allocation, cuts, self.selected, model)
+                    sheet::pages(allocation, cuts, self.selected, model).boxed()
                 }
-                (sheet::Tab::Setup, _) => sheet::setup(self.settings(), self.fit_width),
+                (sheet::Tab::Setup, _) => sheet::setup(self.settings(), self.fit_width).boxed(),
                 _ => inspector::cut(
                     allocation,
                     self.selected_cut(),
                     &self.cut_detection,
                     summary,
-                    |_| widget::container::Style::default(),
+                    theme::container::navigation,
                     true,
-                ),
+                )
+                .boxed(),
             };
             widget::bottom_sheet(
                 &self.sheet,
@@ -856,9 +882,9 @@ impl App {
                 Self::editor(allocation, cuts, self.zoom, self.fit_width),
             )
             .minimum_height(120.)
-            .backdrop_height(400.)
+            .backdrop_height(300.)
             .on_event(Message::Sheet)
-            .into()
+            .boxed()
         }
     }
 
@@ -882,7 +908,7 @@ impl App {
         cuts: &'a CutModel,
         zoom: f32,
         fit_width: bool,
-    ) -> Element<'a, Message> {
+    ) -> impl Widget<Message> + 'a {
         let header = widget::row![
             widget::text::title3("Editor"),
             widget::container(widget::rule::vertical(1)).height(16),
@@ -906,23 +932,19 @@ impl App {
         .style(theme::container::card)
         .width(Fill)
         .height(Fill)
-        .into()
     }
 
-    fn placeholder(&self) -> Element<'_, Message> {
+    fn placeholder(&self) -> impl Widget<Message> + '_ {
         let label = if self.source.is_some() {
             "Loading image…"
         } else {
             "Open an image to start choosing page cuts."
         };
 
-        widget::text(label)
-            .apply(widget::container)
-            .center(Fill)
-            .into()
+        widget::text(label).apply(widget::container).center(Fill)
     }
 
-    fn error_screen(&self, error: &eyre::Report) -> Element<'_, Message> {
+    fn error_screen(&self, error: &eyre::Report) -> impl Widget<Message> + '_ {
         let details = widget::text(format!("{error:#}"))
             .apply(widget::scrollable)
             .height(metrics::ERROR_HEIGHT);
@@ -951,7 +973,6 @@ impl App {
         .apply(widget::container)
         .padding(theme::spacing().space_m)
         .center(Fill)
-        .into()
     }
 }
 

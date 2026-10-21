@@ -64,16 +64,15 @@ pub async fn choose_and_export(
     settings: PageSettings,
     progress: impl Fn(ExportProgress) + Send + Sync + 'static,
 ) -> Result<Option<String>> {
-    let mut dialog = rfd::AsyncFileDialog::new()
-        .set_title("Export PDF")
-        .add_filter("PDF", &["pdf"])
-        .set_file_name(default_name(&source));
-    if let Handle::Path(_, path) = &source
-        && let Some(parent) = path.parent()
-    {
-        dialog = dialog.set_directory(parent);
-    }
-    let Some(file) = dialog.save_file().await else {
+    let name = default_name(&source);
+    #[cfg(not(target_arch = "wasm32"))]
+    let Some(file) = loki_file_access::FilePicker::new()
+        .pick_file_to_save(loki_file_access::SaveOptions {
+            mime_type: Some("application/pdf".into()),
+            suggested_name: Some(name.clone()),
+        })
+        .await?
+    else {
         return Ok(None);
     };
 
@@ -81,9 +80,51 @@ pub async fn choose_and_export(
     progress(ExportProgress::PreparingDocument);
     let pdf = render_in_background(pixels, pages, settings, progress.clone()).await?;
     progress(ExportProgress::SavingFile);
-    file.write(&pdf).await?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let name = file.display_name().to_owned();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let mut writer = file.open_write().wrap_err("Could not create the PDF")?;
+            writer.write_all(&pdf).wrap_err("Could not write the PDF")?;
+            writer.flush()?;
+            Ok(())
+        })
+        .await??;
+        Ok(Some(name))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        download(&pdf, &name)?;
+        Ok(Some(name))
+    }
+}
 
-    Ok(Some(file.file_name()))
+/// Browsers have no save dialog, so the PDF is offered as a download.
+#[cfg(target_arch = "wasm32")]
+fn download(bytes: &[u8], name: &str) -> Result<()> {
+    use wasm_bindgen::JsCast;
+    let error = |error| eyre::eyre!("Could not download the PDF: {error:?}");
+    let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes));
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type("application/pdf");
+    let blob =
+        web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options).map_err(error)?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(error)?;
+    let anchor = web_sys::window()
+        .and_then(|window| window.document())
+        .ok_or_else(|| eyre::eyre!("Could not download the PDF: no document"))?
+        .create_element("a")
+        .map_err(error)?
+        .unchecked_into::<web_sys::HtmlAnchorElement>();
+    anchor.set_href(&url);
+    anchor.set_download(name);
+    anchor.click();
+    // Revoking immediately can cancel the download before the browser reads it.
+    wasm_bindgen_futures::spawn_local(async move {
+        wasmtimer::tokio::sleep(std::time::Duration::from_secs(60)).await;
+        let _ = web_sys::Url::revoke_object_url(&url);
+    });
+    Ok(())
 }
 
 async fn render_in_background(

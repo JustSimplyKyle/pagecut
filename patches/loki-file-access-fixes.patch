@@ -1,0 +1,175 @@
+diff -ruN a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -73,3 +73,6 @@
+ pub use api::{FilePicker, PickOptions, SaveOptions};
+ pub use error::{AccessError, PickerError, TokenParseError};
+ pub use token::{FileAccessToken, PermissionStatus, ReadSeek, WriteSeek};
++/// Forward `Activity.onActivityResult` here to resolve a pending picker.
++#[cfg(target_os = "android")]
++pub use platform::{on_activity_result, set_activity};
+diff -ruN a/src/platform/android/jni_fd.rs b/src/platform/android/jni_fd.rs
+--- a/src/platform/android/jni_fd.rs
++++ b/src/platform/android/jni_fd.rs
+@@ -62,10 +62,10 @@
+             .l()
+             .map_err(|e| super::jni_intents::platform_err("toString object", e))
+             .and_then(|obj| {
+-                env.get_string((&obj).into())
++                env.get_string(&jni::objects::JString::from(obj))
++                    .map(String::from)
+                     .map_err(|e| super::jni_intents::platform_err("read string", e))
+-            })?
+-            .into();
++            })?;
+ 
+         if s == uri {
+             return Ok(PermissionStatus::Valid);
+diff -ruN a/src/platform/android/jni_intents.rs b/src/platform/android/jni_intents.rs
+--- a/src/platform/android/jni_intents.rs
++++ b/src/platform/android/jni_intents.rs
+@@ -135,7 +135,7 @@
+     intent: &jni::objects::JObject<'_>,
+     request_code: i32,
+ ) -> Result<(), PickerError> {
+-    let activity = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
++    let activity = unsafe { jni::objects::JObject::from_raw(super::activity(ctx).cast()) };
+     env.call_method(
+         &activity,
+         "startActivityForResult",
+@@ -188,13 +188,13 @@
+     .map_err(|e| platform_err("getContentResolver object", e))
+ }
+ 
+-pub(super) fn jvm_err(e: jni::errors::JniError) -> PickerError {
++pub(super) fn jvm_err(e: jni::errors::Error) -> PickerError {
+     PickerError::Platform {
+         message: format!("failed to get JavaVM: {e}"),
+     }
+ }
+ 
+-pub(super) fn attach_err(e: jni::errors::JniError) -> PickerError {
++pub(super) fn attach_err(e: jni::errors::Error) -> PickerError {
+     PickerError::Platform {
+         message: format!("failed to attach JNI thread: {e}"),
+     }
+diff -ruN a/src/platform/android/mod.rs b/src/platform/android/mod.rs
+--- a/src/platform/android/mod.rs
++++ b/src/platform/android/mod.rs
+@@ -32,6 +32,21 @@
+     FileAccessToken, PermissionStatus, ReadSeek, TokenInner, WriteSeek,
+ };
+ 
++/// The host `Activity`, since `ndk_context` may only hold the `Application`.
++static ACTIVITY: OnceLock<usize> = OnceLock::new();
++
++/// Launch pickers from this `Activity` (a JNI global reference) instead of
++/// the `ndk_context` context, which cannot start activities for a result.
++pub fn set_activity(activity: *mut std::ffi::c_void) {
++    let _ = ACTIVITY.set(activity as usize);
++}
++
++fn activity(ctx: &ndk_context::AndroidContext) -> *mut std::ffi::c_void {
++    ACTIVITY
++        .get()
++        .map_or_else(|| ctx.context(), |&activity| activity as *mut std::ffi::c_void)
++}
++
+ /// Pending pick state shared between the intent launcher and the JNI callback.
+ static PENDING_PICK: OnceLock<
+     Mutex<Option<Arc<Mutex<crate::future::PickState<Option<String>>>>>>,
+@@ -118,7 +133,7 @@
+             // SAFETY: `open_fd` returns a valid file descriptor from
+             // Android's `ContentResolver.openFileDescriptor` after detaching
+             // it.  The caller takes ownership; it must not be double-closed.
+-            let file = unsafe { std::os::fd::FromRawFd::from_raw_fd(fd) };
++            let file: std::fs::File = unsafe { std::os::fd::FromRawFd::from_raw_fd(fd) };
+             Ok(Box::new(file))
+         }
+         _ => Err(AccessError::Platform {
+@@ -131,7 +146,7 @@
+ pub(crate) fn open_write(inner: &TokenInner) -> Result<Box<dyn WriteSeek>, AccessError> {
+     match inner {
+         TokenInner::Android { uri, .. } => {
+-            let fd = jni_fd::open_fd(uri, "w")?;
++            let fd = jni_fd::open_fd(uri, "wt")?;
+             // SAFETY: Same invariant as `open_read` — see above.
+             let file: std::fs::File =
+                 unsafe { std::os::fd::FromRawFd::from_raw_fd(fd) };
+diff -ruN a/src/platform/desktop/filters.rs b/src/platform/desktop/filters.rs
+--- a/src/platform/desktop/filters.rs
++++ b/src/platform/desktop/filters.rs
+@@ -22,7 +22,8 @@
+ 
+ /// Convert MIME types to file extensions for the `rfd` filter.
+ ///
+-/// Returns one extension string per input MIME type.  Results that are not
++/// Returns one extension string per input MIME type, plus `jpeg` alongside
++/// `jpg` for `image/jpeg`.  Results that are not
+ /// valid Windows `SetFileTypes` extension strings (containing dots, slashes,
+ /// or whitespace) should be discarded by the caller via [`is_valid_extension`]
+ /// before passing to `rfd::AsyncFileDialog::add_filter`.
+@@ -31,7 +32,7 @@
+ /// as-is; [`is_valid_extension`] will reject any subtype that contains dots
+ /// (e.g. all `vnd.*` types not listed here).
+ pub(super) fn mime_types_to_extensions(mime_types: &[String]) -> Vec<String> {
+-    mime_types
++    let mut extensions: Vec<String> = mime_types
+         .iter()
+         .map(|mime| match mime.as_str() {
+             // Plain text / markup
+@@ -92,7 +93,11 @@
+                 other.split('/').nth(1).unwrap_or(other).to_owned()
+             }
+         })
+-        .collect()
++        .collect();
++    if mime_types.iter().any(|mime| mime == "image/jpeg") {
++        extensions.push("jpeg".into());
++    }
++    extensions
+ }
+ 
+ #[cfg(test)]
+diff -ruN a/src/platform/desktop/mod.rs b/src/platform/desktop/mod.rs
+--- a/src/platform/desktop/mod.rs
++++ b/src/platform/desktop/mod.rs
+@@ -219,7 +219,7 @@
+             let file = std::fs::OpenOptions::new()
+                 .write(true)
+                 .create(true)
+-                .truncate(false)
++                .truncate(true)
+                 .open(path)?;
+             Ok(Box::new(file))
+         }
+diff -ruN a/src/platform/mod.rs b/src/platform/mod.rs
+--- a/src/platform/mod.rs
++++ b/src/platform/mod.rs
+@@ -26,6 +26,8 @@
+ pub(crate) use android::{
+     check_permission, open_read, open_write, pick_open_multi, pick_open_single, pick_save,
+ };
++#[cfg(target_os = "android")]
++pub use android::{on_activity_result, set_activity};
+ 
+ #[cfg(target_os = "ios")]
+ mod ios;
+diff -ruN a/src/platform/wasm.rs b/src/platform/wasm.rs
+--- a/src/platform/wasm.rs
++++ b/src/platform/wasm.rs
+@@ -141,6 +141,14 @@
+             "change",
+             cb.as_ref().unchecked_ref(),
+         );
++        let resolve_cancel = resolve.clone();
++        let cancel = wasm_bindgen::closure::Closure::once_into_js(move || {
++            let _ = resolve_cancel.call0(&wasm_bindgen::JsValue::NULL);
++        });
++        let _ = input.add_event_listener_with_callback(
++            "cancel",
++            cancel.as_ref().unchecked_ref(),
++        );
+     });
+ 
+     // Trigger the file dialog.

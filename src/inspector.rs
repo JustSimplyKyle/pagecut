@@ -1,8 +1,9 @@
 //! Cut controls; geometry and page calculations belong to the editor and preview.
 use crate::{Message, blank::CutDetection, cut_layer::CutAction, metrics, preview};
 use iced::{Length, alignment::Vertical};
+use vse_ui::iced::Widget;
 use vse_ui::{
-    Apply, Element,
+    Apply,
     iced::{self, Fill},
     theme, widget,
 };
@@ -21,8 +22,8 @@ pub fn cut<'a>(
     summary: String,
     style: impl Fn(&vse_ui::Theme) -> widget::container::Style + 'a,
     compacted: bool,
-) -> Element<'a, Message> {
-    let controls: Element<'a, Message> = match selected {
+) -> impl Widget<Message> + 'a {
+    let controls = match selected {
         Some(selected) => widget::column![
             (!compacted).then_some(cut_preview(allocation, selected)),
             cut_position(selected),
@@ -34,7 +35,7 @@ pub fn cut<'a>(
         .spacing(theme::spacing().space_xs)
         .apply(widget::scrollable)
         .height(Fill)
-        .into(),
+        .boxed(),
         None => widget::text::body(
             "Click a cut to adjust it, or click between cuts to add one. \
              Right-click a cut to remove it.",
@@ -42,7 +43,7 @@ pub fn cut<'a>(
         .style(widget::text::secondary)
         .apply(widget::container)
         .height(Fill)
-        .into(),
+        .boxed(),
     };
     widget::column![
         controls,
@@ -54,13 +55,12 @@ pub fn cut<'a>(
     .padding(theme::spacing().space_s)
     .height(Fill)
     .style(style)
-    .into()
 }
 
 fn cut_preview(
     allocation: &widget::image::Allocation,
     selected: SelectedCut,
-) -> Element<'_, Message> {
+) -> impl Widget<Message> + '_ {
     widget::column![
         widget::text::body("Cut preview").style(widget::text::secondary),
         preview::zoom(allocation, selected.index, selected.position)
@@ -72,10 +72,9 @@ fn cut_preview(
     .apply(widget::container)
     .padding(theme::spacing().space_xs)
     .style(theme::container::secondary)
-    .into()
 }
 
-fn cut_position(selected: SelectedCut) -> Element<'static, Message> {
+fn cut_position(selected: SelectedCut) -> impl Widget<Message> {
     let minus = widget::icon!("list-remove-symbolic")
         .apply(widget::button)
         .padding(theme::spacing().space_xxs)
@@ -97,10 +96,9 @@ fn cut_position(selected: SelectedCut) -> Element<'static, Message> {
     ]
     .spacing(theme::spacing().space_xxs)
     .align_y(iced::Alignment::Center)
-    .into()
 }
 
-fn cut_detection(detection: &CutDetection) -> Element<'_, Message> {
+fn cut_detection(detection: &CutDetection) -> impl Widget<Message> + '_ {
     use theme::{COSMIC, color};
     let (tone, icon) = match detection {
         CutDetection::Waiting | CutDetection::Checking => (
@@ -153,14 +151,12 @@ fn cut_detection(detection: &CutDetection) -> Element<'_, Message> {
         "checks whether all pixels on the line is roughly the same color",
         widget::tooltip::Position::FollowCursor,
     )
-    .into()
 }
 
-fn remove_cut(selected: SelectedCut) -> Element<'static, Message> {
+fn remove_cut(selected: SelectedCut) -> impl Widget<Message> {
     widget::text("Remove cut")
         .apply(widget::button)
         .padding(theme::spacing().space_xs)
         .width(Fill)
         .on_press(Message::Cut(CutAction::Remove(selected.index)))
-        .into()
 }

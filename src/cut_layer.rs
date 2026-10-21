@@ -4,7 +4,7 @@ use std::ops::Deref;
 use std::range::Range;
 use std::rc::Rc;
 
-use vse_ui::iced::{self, Color, Fill};
+use vse_ui::iced::{self, Color, Fill, Widget};
 use vse_ui::{Apply, Element, Theme, widget};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,10 +222,10 @@ pub fn default(_theme: &Theme, status: Status) -> Style {
 }
 
 /// A one pixel high (or `thickness` high) bar filling the available width.
-fn solid_line<'a, Message: 'a>(
+fn solid_line<'a>(
     thickness: f32,
     color: impl Fn(&Theme) -> Color + 'a,
-) -> widget::Container<'a, Message, Theme> {
+) -> widget::Container<'a, widget::Space, Theme> {
     widget::container(widget::Space::new())
         .width(Fill)
         .height(thickness)
@@ -243,11 +243,11 @@ fn dotted_line<'a, Message: 'a>(
     color: impl Fn(&Theme) -> Color + Clone + 'a,
 ) -> Element<'a, Message> {
     const DOTS: usize = 120;
-    let dot = || solid_line(1.0, color.clone()).into();
-    let gap = || widget::Space::new().width(Fill).into();
+    let dot = || solid_line(1.0, color.clone()).boxed();
+    let gap = || widget::Space::new().width(Fill).boxed();
     widget::row((0..DOTS).flat_map(|_| [dot(), gap()]))
         .width(Fill)
-        .into()
+        .boxed()
 }
 
 /// Draws the cuts of a [`CutModel`] on top of `content` and lets the user
@@ -432,7 +432,7 @@ impl<'a, Message: Clone + 'static> widget::Component<'a, Message, Theme> for Cut
         }
     }
 
-    fn view(&self, state: &CutLayerState) -> Element<'a, Self::Event> {
+    fn view(&self, state: &CutLayerState) -> impl Widget<Self::Event> + 'a {
         let max_length = self.model.max_length;
 
         // Every cut, plus a limit inside each page that's over `max_length`
@@ -456,7 +456,7 @@ impl<'a, Message: Clone + 'static> widget::Component<'a, Message, Theme> for Cut
                     let status = self.status(state, index);
                     let style = self.style.clone();
                     let line = solid_line(status.thickness(), move |theme| style(theme, status).cut);
-                    (line.into(), status.thickness())
+                    (line.boxed(), status.thickness())
                 }
                 Mark::Limit => {
                     let style = self.style.clone();
@@ -465,7 +465,7 @@ impl<'a, Message: Clone + 'static> widget::Component<'a, Message, Theme> for Cut
                 }
             };
             let line_top = position as f32 * state.scale - thickness / 2.0;
-            lines.push(widget::Space::new().height((line_top - top).max(0.0)).into());
+            lines.push(widget::Space::new().height((line_top - top).max(0.0)).boxed());
             lines.push(line);
             top = line_top + thickness;
         }
@@ -483,13 +483,12 @@ impl<'a, Message: Clone + 'static> widget::Component<'a, Message, Theme> for Cut
             .on_right_press(CutLayerEvent::RightPressed)
             .on_release(CutLayerEvent::Released)
             .interaction(interaction)
-            .into()
     }
 }
 
 impl<'a, Message: Clone + 'static> From<CutLayer<'a, Message>> for Element<'a, Message> {
     fn from(layer: CutLayer<'a, Message>) -> Self {
-        widget::component(layer)
+        widget::component(layer).boxed()
     }
 }
 

@@ -1,8 +1,9 @@
 //! Compact-layout bottom sheet: Cut, Pages and Setup behind a segmented tab row.
 use crate::{Message, cut_layer::CutModel, layout, sidebar};
+use vse_ui::iced::Widget;
 use vse_ui::{
-    Apply, Element,
-    iced::{Fill, alignment::Vertical},
+    Apply,
+    iced::{self, Fill, alignment::Vertical},
     theme,
     widget::{self, segmented_button::SingleSelectModel},
 };
@@ -61,7 +62,7 @@ pub fn page_model(cuts: &CutModel, selected: Option<usize>) -> SingleSelectModel
     model
 }
 
-pub fn tabs(active: Tab) -> Element<'static, Message> {
+pub fn tabs(active: Tab) -> impl Widget<Message> {
     let last = Tab::ALL.len() - 1;
     Tab::ALL
         .into_iter()
@@ -91,12 +92,10 @@ pub fn tabs(active: Tab) -> Element<'static, Message> {
             .style(move |theme, status| {
                 theme::segmented_button(theme, status, selected, index == 0, index == last)
             })
-            .into()
         })
         .apply(widget::row)
         .spacing(1)
         .width(Fill)
-        .into()
 }
 
 pub fn pages<'a>(
@@ -104,7 +103,7 @@ pub fn pages<'a>(
     cuts: &CutModel,
     selected: Option<usize>,
     model: &'a SingleSelectModel<usize>,
-) -> Element<'a, Message> {
+) -> impl Widget<Message> + 'a {
     let pager = widget::pager::horizontal(model)
         .on_activate(move |id| Message::SelectPage(*model.entries()[&id].data()));
     let footer = widget::row![
@@ -117,26 +116,25 @@ pub fn pages<'a>(
     widget::column![sidebar::strip(allocation, cuts, selected), footer]
         .spacing(theme::spacing().space_s)
         .padding(theme::spacing().space_s)
-        .into()
 }
 
-pub fn setup(settings: layout::PageSettings, fit_width: bool) -> Element<'static, Message> {
+pub fn setup(settings: layout::PageSettings, fit_width: bool) -> impl Widget<Message> {
     let paper = segments(
         layout::Paper::ALL,
         settings.paper,
-        ToString::to_string,
+        |paper, _| widget::text(paper.to_string()),
         Message::Paper,
     );
     let orientation = segments(
         layout::Orientation::ALL,
         settings.orientation,
-        ToString::to_string,
+        orientation_icon,
         Message::Orientation,
     );
     let margins = segments(
         layout::Margin::ALL,
         settings.margin,
-        |margin: &layout::Margin| margin.0.to_string(),
+        |margin, _| widget::text(margin.0.to_string()),
         Message::Margin,
     );
     let fit = widget::row![
@@ -160,32 +158,57 @@ pub fn setup(settings: layout::PageSettings, fit_width: bool) -> Element<'static
     ]
     .spacing(theme::spacing().space_s)
     .padding(theme::spacing().space_s)
-    .into()
 }
 
-fn field<'a>(label: &'a str, control: Element<'a, Message>) -> Element<'a, Message> {
+fn field<'a>(label: &'a str, control: impl Widget<Message> + 'a) -> impl Widget<Message> + 'a {
     widget::column![
         widget::text::caption(label).style(widget::text::secondary),
         control
     ]
     .spacing(theme::spacing().space_xxs)
     .width(Fill)
-    .into()
+}
+
+fn orientation_icon(
+    orientation: &layout::Orientation,
+    active: bool,
+) -> impl Widget<Message> + use<> {
+    const LONG: f32 = 16.0;
+    const SHORT: f32 = LONG * 3.0 / 4.0;
+    let [width, height] = match orientation {
+        layout::Orientation::Portrait => [SHORT, LONG],
+        layout::Orientation::Landscape => [LONG, SHORT],
+    };
+    let tone = if active {
+        theme::color(theme::COSMIC.accent.on)
+    } else {
+        theme::icon_color()
+    };
+    let shape = widget::space()
+        .width(width)
+        .height(height)
+        .apply(widget::container)
+        .style(move |_| widget::container::Style {
+            border: iced::border::rounded(2).color(tone).width(1.5),
+            ..widget::container::Style::default()
+        });
+    // A fixed-height slot keeps both buttons as tall as the text segments.
+    widget::container(shape).center_y(LONG + 4.0)
 }
 
 /// A row of mutually exclusive choices, styled like the tab row.
-fn segments<T: Copy + PartialEq + 'static, const N: usize>(
+fn segments<T: Copy + PartialEq + 'static, W: Widget<Message>, const N: usize>(
     options: [T; N],
     selected: T,
-    label: impl Fn(&T) -> String,
+    label: impl Fn(&T, bool) -> W,
     on_press: impl Fn(T) -> Message,
-) -> Element<'static, Message> {
+) -> impl Widget<Message> {
     options
         .into_iter()
         .enumerate()
         .map(|(index, option)| {
             let active = option == selected;
-            widget::text(label(&option))
+            label(&option, active)
                 .apply(widget::container)
                 .center_x(Fill)
                 .apply(widget::button)
@@ -195,16 +218,14 @@ fn segments<T: Copy + PartialEq + 'static, const N: usize>(
                 .style(move |theme, status| {
                     theme::segmented_button(theme, status, active, index == 0, index == N - 1)
                 })
-                .into()
         })
         .apply(widget::row)
         .spacing(1)
         .width(Fill)
-        .into()
 }
 
 /// Wraps the active tab's panel under the tab row on the sheet surface.
-pub fn sheet<'a>(active: Tab, content: Element<'a, Message>) -> Element<'a, Message> {
+pub fn sheet<'a>(active: Tab, content: impl Widget<Message> + 'a) -> impl Widget<Message> + 'a {
     widget::column![tabs(active), content]
         .spacing(theme::spacing().space_xxs)
         .apply(widget::container)
@@ -212,5 +233,4 @@ pub fn sheet<'a>(active: Tab, content: Element<'a, Message>) -> Element<'a, Mess
         .height(Fill)
         .width(Fill)
         .style(theme::container::navigation)
-        .into()
 }

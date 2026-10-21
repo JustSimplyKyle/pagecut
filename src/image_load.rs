@@ -1,9 +1,17 @@
 //! Chunked reads and image decoding for the native and browser executors.
 use eyre::{Context, Result};
+use std::io::{Seek, SeekFrom};
 use std::sync::Arc;
 use vse_ui::iced::{advanced::graphics::image::Buffer, widget::image::Handle};
 
 const READ_CHUNK: usize = 1024 * 1024;
+
+/// Image formats the picker offers.
+#[cfg(not(target_os = "android"))]
+pub const MIME_TYPES: &[&str] = &["image/png", "image/jpeg"];
+/// Android's document picker filters on a single MIME type.
+#[cfg(target_os = "android")]
+pub const MIME_TYPES: &[&str] = &["image/*"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReadProgress {
@@ -25,60 +33,26 @@ impl ReadProgress {
 }
 
 pub async fn read(
-    file: rfd::FileHandle,
+    file: loki_file_access::FileAccessToken,
     progress: impl FnMut(ReadProgress) + Send + 'static,
 ) -> Result<Vec<u8>> {
+    let read = move || {
+        let mut reader = file.open_read().wrap_err("Cannot open image")?;
+        let total = reader.seek(SeekFrom::End(0))?;
+        reader.rewind()?;
+        read_chunks(&mut reader, total, progress)
+    };
     #[cfg(not(target_arch = "wasm32"))]
     {
-        tokio::task::spawn_blocking(move || {
-            let mut reader = std::fs::File::open(file.path()).wrap_err("Cannot open image")?;
-            let total = reader.metadata()?.len();
-            read_chunks(&mut reader, total, progress)
-        })
-        .await?
+        tokio::task::spawn_blocking(read).await?
     }
+    // The browser picker has already loaded the file into memory.
     #[cfg(target_arch = "wasm32")]
     {
-        use js_sys::Uint8Array;
-        use wasm_bindgen_futures::JsFuture;
-        let mut progress = progress;
-        let total = file.inner().size() as u64;
-        let capacity = usize::try_from(total).wrap_err("Image file is too large")?;
-        let mut bytes = Vec::new();
-        bytes.try_reserve_exact(capacity)?;
-        progress(ReadProgress {
-            completed: 0,
-            total,
-        });
-        while bytes.len() < capacity {
-            let end = bytes.len().saturating_add(READ_CHUNK).min(capacity);
-            let chunk = file
-                .inner()
-                .slice_with_f64_and_f64(bytes.len() as f64, end as f64)
-                .map_err(|error| eyre::eyre!("Cannot read image chunk: {error:?}"))?;
-            let buffer = JsFuture::from(chunk.array_buffer())
-                .await
-                .map_err(|error| eyre::eyre!("Image read failed: {error:?}"))?;
-            let chunk = Uint8Array::new(&buffer);
-            eyre::ensure!(
-                chunk.length() as usize == end - bytes.len(),
-                "Incomplete image read"
-            );
-            let start = bytes.len();
-            bytes.resize(end, 0);
-            chunk.copy_to(&mut bytes[start..end]);
-            progress(ReadProgress {
-                completed: end as u64,
-                total,
-            });
-            // A browser task boundary lets the UI display the published progress.
-            wasmtimer::tokio::sleep(std::time::Duration::ZERO).await;
-        }
-        Ok(bytes)
+        read()
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn read_chunks(
     reader: &mut impl std::io::Read,
     total: u64,

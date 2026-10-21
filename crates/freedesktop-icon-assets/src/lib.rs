@@ -47,7 +47,23 @@ pub fn icon(input: TokenStream) -> TokenStream {
                     };
                     ::iced::widget::svg::Svg::from_url(::std::format!("{prefix}{asset}"))
                 };
-                #[cfg(not(target_arch = "wasm32"))]
+                // dx packs the asset into the APK; read it once per call site.
+                #[cfg(target_os = "android")]
+                let svg = {
+                    static HANDLE: ::std::sync::OnceLock<::iced::widget::svg::Handle> =
+                        ::std::sync::OnceLock::new();
+                    let handle = HANDLE.get_or_init(|| {
+                        let asset = ::manganis::asset!(#path).to_string();
+                        let bytes = ::dioxus_asset_resolver::native::serve_asset(&asset)
+                            .ok()
+                            .filter(|response| response.status().is_success())
+                            .map(|response| response.into_body())
+                            .unwrap_or_default();
+                        ::iced::widget::svg::Handle::from_memory(bytes)
+                    });
+                    ::iced::widget::svg(handle.clone())
+                };
+                #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
                 let svg = ::iced::widget::svg(#source);
                 svg.width(16).height(16).style(|_: &::vse_ui::Theme, _| {
                     ::iced::widget::svg::Style {

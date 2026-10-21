@@ -1,3 +1,4 @@
 /target
 /dist
 /assets/generated
+/crates/loki-file-access

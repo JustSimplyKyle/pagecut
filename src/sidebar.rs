@@ -1,13 +1,14 @@
 use super::{Message, metrics};
 use crate::cut_layer::CutModel;
+use vse_ui::iced::Widget;
 use vse_ui::iced::{Fill, Rectangle, Size};
-use vse_ui::{Apply, Element, theme, widget};
+use vse_ui::{Apply, theme, widget};
 
 pub fn pages<'a>(
     allocation: &'a widget::image::Allocation,
     cuts: &CutModel,
     selected: Option<usize>,
-) -> Element<'a, Message> {
+) -> impl Widget<Message> + 'a {
     let thumbnails = thumbnails(allocation, cuts, selected).map(|page| thumbnail(allocation, page));
     let count = cuts.pages().count();
     let header = widget::row![
@@ -27,7 +28,6 @@ pub fn pages<'a>(
         .width(metrics::SIDEBAR)
         .height(Fill)
         .style(theme::container::card)
-        .into()
 }
 /// Every page with the region its thumbnail shows.
 fn thumbnails(
@@ -119,7 +119,7 @@ pub fn strip<'a>(
     allocation: &'a widget::image::Allocation,
     cuts: &CutModel,
     selected: Option<usize>,
-) -> Element<'a, Message> {
+) -> impl Widget<Message> + 'a {
     thumbnails(allocation, cuts, selected)
         .map(|page| card(allocation, page))
         .apply(widget::row)
@@ -127,9 +127,8 @@ pub fn strip<'a>(
         .apply(widget::scrollable)
         .horizontal()
         .width(Fill)
-        .into()
 }
-fn card(allocation: &widget::image::Allocation, thumbnail: Thumbnail) -> Element<'_, Message> {
+fn card(allocation: &widget::image::Allocation, thumbnail: Thumbnail) -> impl Widget<Message> + '_ {
     let image = widget::image(allocation.handle())
         .crop(thumbnail.region)
         .content_fit(vse_ui::iced::ContentFit::Contain)
@@ -156,9 +155,11 @@ fn card(allocation: &widget::image::Allocation, thumbnail: Thumbnail) -> Element
     } else {
         theme::button::navigation_inactive
     })
-    .into()
 }
-fn thumbnail(allocation: &widget::image::Allocation, thumbnail: Thumbnail) -> Element<'_, Message> {
+fn thumbnail(
+    allocation: &widget::image::Allocation,
+    thumbnail: Thumbnail,
+) -> impl Widget<Message> + '_ {
     let image = widget::image(allocation.handle())
         .crop(thumbnail.region)
         .content_fit(vse_ui::iced::ContentFit::Contain)
@@ -186,5 +187,4 @@ fn thumbnail(allocation: &widget::image::Allocation, thumbnail: Thumbnail) -> El
         } else {
             theme::button::navigation_inactive
         })
-        .into()
 }

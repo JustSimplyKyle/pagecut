@@ -95,18 +95,31 @@
     "iced-source": {
       "flake": false,
       "locked": {
-        "lastModified": 1790436824,
-        "narHash": "sha256-xx2fS0S7DfRKf3pPTOrVF7SAxy5Kgu4HoJi6fgMsPVc=",
+        "lastModified": 1792513072,
+        "narHash": "sha256-VVjU5TOH0Wt9v872tKtOvB7cHyS0XfK/CLujChW5Jxo=",
         "owner": "JustSimplyKyle",
         "repo": "iced",
-        "rev": "bd9d88e5a54d59acc74a49e9f1c4593dbcaab294",
+        "rev": "c02bd26ad2aa19f9291d418c6a0327df256d2ed0",
         "type": "github"
       },
       "original": {
         "owner": "JustSimplyKyle",
         "repo": "iced",
-        "rev": "bd9d88e5a54d59acc74a49e9f1c4593dbcaab294",
+        "rev": "c02bd26ad2aa19f9291d418c6a0327df256d2ed0",
         "type": "github"
+      }
+    },
+    "loki-file-access-source": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1153704088,
+        "narHash": "sha256-i52loS8QRTLKPZY9bUjsgFVZhUD1+wcAxaGBqBKvhDE=",
+        "type": "tarball",
+        "url": "https://static.crates.io/crates/loki-file-access/loki-file-access-0.1.1.crate"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://static.crates.io/crates/loki-file-access/loki-file-access-0.1.1.crate"
       }
     },
     "nixpkgs": {
@@ -178,6 +191,7 @@
         "cosmic-source": "cosmic-source",
         "dioxus": "dioxus",
         "iced-source": "iced-source",
+        "loki-file-access-source": "loki-file-access-source",
         "nixpkgs": "nixpkgs_2",
         "rust-overlay": "rust-overlay_2",
         "utils": "utils",
@@ -271,17 +285,17 @@
     "vse-source": {
       "flake": false,
       "locked": {
-        "lastModified": 1790938121,
-        "narHash": "sha256-rUjTMLpb9lYwCv/3pFp+PUbaBaqNFpytAZ9jXQjTbMw=",
+        "lastModified": 1792513449,
+        "narHash": "sha256-MCWRU/+e6qeKim5aRPRTCcOP5UhITQclc0xqXsTH9lo=",
         "owner": "JustSimplyKyle",
         "repo": "videosubextract",
-        "rev": "504ce20035f559bf78b52556ea6e13738e3fa126",
+        "rev": "33f10be810829e7f2a9ead38d047f7cf476523e7",
         "type": "github"
       },
       "original": {
         "owner": "JustSimplyKyle",
         "repo": "videosubextract",
-        "rev": "504ce20035f559bf78b52556ea6e13738e3fa126",
+        "rev": "33f10be810829e7f2a9ead38d047f7cf476523e7",
         "type": "github"
       }
     }

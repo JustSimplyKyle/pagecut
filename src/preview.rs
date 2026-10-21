@@ -1,4 +1,5 @@
 use iced::mouse::{Button as MButton, Event as MEvent};
+use vse_ui::iced::Widget;
 use vse_ui::iced::{self, Color, Fill, Point, Rectangle, Size};
 use vse_ui::{Apply, Element, theme, widget};
 
@@ -11,9 +12,9 @@ const RULE_HIT_PX: f32 = 10.0;
 const SCROLL_ID: &str = "image-preview";
 
 pub fn scroll_to(start: u32, scale: f32) -> iced::Task<Message> {
-    widget::operation::scroll_to(
+    widget::operation::scrollable::scroll_to(
         SCROLL_ID,
-        widget::operation::AbsoluteOffset {
+        widget::operation::scrollable::AbsoluteOffset {
             x: 0.0,
             y: start as f32 * scale,
         },
@@ -26,7 +27,7 @@ pub fn preview<'a>(
     cuts: &'a CutModel,
     zoom: f32,
     fit_width: bool,
-) -> Element<'a, Message> {
+) -> impl Widget<Message> + 'a {
     widget::responsive(move |available| {
         let size = allocation.size();
         let scale = preview_scale(size, available, cuts.max_length(), fit_width) * zoom;
@@ -35,7 +36,7 @@ pub fn preview<'a>(
             widget::image(allocation.handle())
                 .width(image_size.width)
                 .height(image_size.height)
-                .into()
+                .boxed()
         })
         .on_action(Message::Cut)
         .on_rescale(Message::PreviewScale)
@@ -50,7 +51,6 @@ pub fn preview<'a>(
         .apply(widget::container)
         .style(theme::container::secondary)
     })
-    .into()
 }
 
 /// Fits the width, and unless `fit_width` also a whole page with room to spare
@@ -76,7 +76,7 @@ pub fn zoom<'a>(
     allocation: &'a widget::image::Allocation,
     index: usize,
     cut: u32,
-) -> Element<'a, Message> {
+) -> impl Widget<Message> + 'a {
     widget::responsive(move |available| {
         let zoom = ZoomGeometry::new(allocation.size(), cut, available);
         let image = segment(allocation, zoom.region, zoom.size);
@@ -92,20 +92,18 @@ pub fn zoom<'a>(
             .apply(widget::container)
             .center(Fill)
     })
-    .into()
 }
 
 fn segment(
     allocation: &widget::image::Allocation,
     region: Rectangle<u32>,
     size: Size,
-) -> Element<'_, Message> {
+) -> impl Widget<Message> + '_ {
     widget::image(allocation.handle())
         .crop(region)
         .content_fit(iced::ContentFit::Contain)
         .width(size.width)
         .height(size.height)
-        .into()
 }
 
 struct ZoomGeometry {

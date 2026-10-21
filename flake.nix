@@ -8,15 +8,19 @@
     dioxus.inputs.nixpkgs.follows = "nixpkgs";
     # Pin the sources used by Cargo's neighboring path dependencies.
     iced-source = {
-      url = "github:JustSimplyKyle/iced/bd9d88e5a54d59acc74a49e9f1c4593dbcaab294";
+      url = "github:JustSimplyKyle/iced/c02bd26ad2aa19f9291d418c6a0327df256d2ed0";
       flake = false;
     };
     vse-source = {
-      url = "github:JustSimplyKyle/videosubextract/504ce20035f559bf78b52556ea6e13738e3fa126";
+      url = "github:JustSimplyKyle/videosubextract/33f10be810829e7f2a9ead38d047f7cf476523e7";
       flake = false;
     };
     cosmic-source = {
       url = "github:pop-os/libcosmic/e9d8c30e9490c7badcddb7f2ab6a404e8ecccc4d";
+      flake = false;
+    };
+    loki-file-access-source = {
+      url = "tarball+https://static.crates.io/crates/loki-file-access/loki-file-access-0.1.1.crate";
       flake = false;
     };
     cosmic-iced-source = {
@@ -35,6 +39,7 @@
       vse-source,
       cosmic-source,
       cosmic-iced-source,
+      loki-file-access-source,
     }:
     utils.lib.eachDefaultSystem (
       system:
@@ -43,9 +48,16 @@
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs {
           inherit system overlays;
+          # The Android SDK and NDK are unfree and require license acceptance.
+          config.allowUnfree = true;
+          config.android_sdk.accept_license = true;
         };
         rustToolchain = pkgs.rust-bin.nightly.latest.default.override {
-          targets = [ "wasm32-unknown-unknown" ];
+          targets = [
+            "wasm32-unknown-unknown"
+            "aarch64-linux-android"
+            "x86_64-linux-android"
+          ];
           extensions = [
             "rust-src"
             "rust-analyzer"
@@ -72,8 +84,7 @@
             ./patches/dioxus-cli-wasm-asset-tls.patch
           ];
         });
-        # Recreate the path layout without depending on local checkouts. Keep
-        # development-only shared UI fixes until they are committed upstream.
+        # Recreate the path layout without depending on local checkouts.
         packageSource =
           pkgs.runCommand "${cargoToml.package.name}-source"
             {
@@ -100,14 +111,25 @@
               rm -rf "$out/libcosmic/iced"
               cp -r ${cosmic-iced-source} "$out/libcosmic/iced"
               chmod -R u+w "$out"
-              patch -d "$out/videosubextract" -p1 < ${./patches/vse-ui-local.patch}
-              patch -d "$out/videosubextract" -p1 < ${./patches/vse-ui-wasm-theme.patch}
-              patch -d "$out/videosubextract" -p1 < ${./patches/vse-ui-web-icons.patch}
               patch -d "$out/libcosmic" -p1 < ${./patches/cosmic-theme-optional-config.patch}
-              patch -d "$out/iced-dioxus" -p1 < ${./patches/iced-keyed-column.patch}
-              patch -d "$out/iced-dioxus" -p1 < ${./patches/iced-svg-url.patch}
-              patch -d "$out/iced-dioxus" -p1 < ${./patches/iced-wasm-image-allocation.patch}
+              cp -r ${loki-file-access-source} "$out/pagecut/crates/loki-file-access"
+              chmod -R u+w "$out/pagecut/crates/loki-file-access"
+              patch -d "$out/pagecut/crates/loki-file-access" -p1 < ${./patches/loki-file-access-fixes.patch}
             '';
+        # Match the compile SDK and build tools expected by dx's Gradle template.
+        androidComposition = pkgs.androidenv.composeAndroidPackages {
+          platformVersions = [ "34" ];
+          buildToolsVersions = [ "34.0.0" ];
+          includeNDK = true;
+          ndkVersions = [ "29.0.14206865" ];
+          # `dx serve` boots the first AVD it finds; see `just android-avd`.
+          includeEmulator = true;
+          includeSystemImages = true;
+          systemImageTypes = [ "default" ];
+          abiVersions = [ "x86_64" ];
+        };
+        androidSdk = androidComposition.androidsdk;
+        androidSdkRoot = "${androidSdk}/libexec/android-sdk";
         runtimeLibraries = with pkgs; [
           wayland
           libxkbcommon
@@ -172,7 +194,7 @@
             clangMold
             dioxusCli
             # Must match iced's pinned wasm-bindgen dependency exactly.
-            pkgs.wasm-bindgen-cli_0_2_108
+            pkgs.wasm-bindgen-cli_0_2_127
             pkgs.esbuild
             pkgs.binaryen
             pkgs.samply
@@ -189,6 +211,18 @@
           # LIBCLANG_PATH="${pkgs.libclang.lib}/lib";
 
         };
+        devShells.android = self.devShells.${system}.default.overrideAttrs (old: {
+          buildInputs = old.buildInputs ++ [
+            androidSdk
+            pkgs.jdk17
+          ];
+          ANDROID_HOME = androidSdkRoot;
+          ANDROID_SDK_ROOT = androidSdkRoot;
+          ANDROID_NDK_HOME = "${androidSdkRoot}/ndk-bundle";
+          JAVA_HOME = pkgs.jdk17.home;
+          # Gradle's downloaded aapt2 is dynamically linked and cannot run on NixOS.
+          GRADLE_OPTS = "-Dorg.gradle.project.android.aapt2FromMavenOverride=${androidSdkRoot}/build-tools/34.0.0/aapt2";
+        });
       }
     );
 }

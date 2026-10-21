@@ -4,6 +4,7 @@ publisher = "justsimplykyle"
 
 [application]
 default_platform = "linux"
+android_main_activity = "android/MainActivity.kt"
 
 [web.app]
 title = "Pagecut"
