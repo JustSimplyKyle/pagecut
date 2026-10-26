@@ -7,7 +7,7 @@ use flate2::{Compression, write::ZlibEncoder};
 use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref};
 use vse_ui::iced::{Rectangle, advanced::graphics::image::Buffer, widget::image::Handle};
 
-use crate::{layout::PageSettings, slices::Slice};
+use crate::{cut_layer::CutModel, layout::PageSettings};
 
 #[cfg(test)]
 use vse_ui::iced::advanced::graphics::image as raster;
@@ -45,10 +45,22 @@ impl ExportProgress {
     }
 }
 
+/// The image region of each page of `cuts`, for an image `width` pixels wide.
+pub fn regions(cuts: &CutModel, width: u32) -> Vec<Rectangle<u32>> {
+    cuts.pages()
+        .map(|page| Rectangle {
+            x: 0,
+            y: page.start as u32,
+            width,
+            height: (page.end - page.start) as u32,
+        })
+        .collect()
+}
+
 pub async fn choose_and_export(
     source: Handle,
     pixels: Arc<Buffer>,
-    pages: Vec<Slice>,
+    pages: Vec<Rectangle<u32>>,
     settings: PageSettings,
     progress: impl Fn(ExportProgress) + Send + Sync + 'static,
 ) -> Result<Option<String>> {
@@ -76,7 +88,7 @@ pub async fn choose_and_export(
 
 async fn render_in_background(
     pixels: Arc<Buffer>,
-    pages: Vec<Slice>,
+    pages: Vec<Rectangle<u32>>,
     settings: PageSettings,
     progress: Arc<impl Fn(ExportProgress) + Send + Sync + 'static>,
 ) -> Result<Vec<u8>> {
@@ -95,13 +107,13 @@ fn default_name(source: &Handle) -> String {
 }
 
 #[cfg(test)]
-fn write(source: &Handle, pages: &[Slice], target: &Path) -> Result<()> {
+fn write(source: &Handle, pages: &[Rectangle<u32>], target: &Path) -> Result<()> {
     write_with_settings(source, pages, target, PageSettings::default())
 }
 #[cfg(test)]
 fn write_with_settings(
     source: &Handle,
-    pages: &[Slice],
+    pages: &[Rectangle<u32>],
     target: &Path,
     settings: PageSettings,
 ) -> Result<()> {
@@ -112,7 +124,7 @@ fn write_with_settings(
 fn write_with_progress(
     source: &Handle,
     pixels: &Buffer,
-    pages: &[Slice],
+    pages: &[Rectangle<u32>],
     target: &Path,
     settings: PageSettings,
     progress: &impl Fn(ExportProgress),
@@ -143,13 +155,13 @@ fn write_with_progress(
 }
 
 #[cfg(test)]
-fn render(pixels: &Buffer, pages: &[Slice]) -> Result<Vec<u8>> {
+fn render(pixels: &Buffer, pages: &[Rectangle<u32>]) -> Result<Vec<u8>> {
     render_with_settings(pixels, pages, PageSettings::default())
 }
 #[cfg(test)]
 fn render_with_settings(
     pixels: &Buffer,
-    pages: &[Slice],
+    pages: &[Rectangle<u32>],
     settings: PageSettings,
 ) -> Result<Vec<u8>> {
     render_with_progress(pixels, pages, settings, &|_| {})
@@ -157,7 +169,7 @@ fn render_with_settings(
 
 fn render_with_progress(
     pixels: &Buffer,
-    pages: &[Slice],
+    pages: &[Rectangle<u32>],
     settings: PageSettings,
     progress: &impl Fn(ExportProgress),
 ) -> Result<Vec<u8>> {
@@ -178,8 +190,7 @@ fn render_with_progress(
         completed: 0,
         total: pages.len(),
     });
-    for (index, (slice, page_ref)) in pages.iter().zip(page_refs).enumerate() {
-        let region = slice.region();
+    for (index, (&region, page_ref)) in pages.iter().zip(page_refs).enumerate() {
         let image_ref = Ref::new(page_ref.get() + 1);
         let content_ref = Ref::new(page_ref.get() + 2);
         let name = Name(b"Image");
@@ -214,7 +225,7 @@ fn render_with_progress(
     Ok(pdf.finish())
 }
 
-fn validate_pages(pixels: &Buffer, pages: &[Slice], settings: PageSettings) -> Result<()> {
+fn validate_pages(pixels: &Buffer, pages: &[Rectangle<u32>], settings: PageSettings) -> Result<()> {
     ensure!(!pages.is_empty(), "There are no confirmed pages to export.");
     ensure!(
         pages.len() <= (i32::MAX as usize - 3) / 3,
@@ -225,8 +236,7 @@ fn validate_pages(pixels: &Buffer, pages: &[Slice], settings: PageSettings) -> R
         "Invalid image width."
     );
     let mut next_y = 0;
-    for slice in pages {
-        let page = slice.region();
+    for &page in pages {
         ensure!(
             page.x == 0
                 && page.width == pixels.width()
@@ -331,25 +341,19 @@ mod tests {
         }
         Handle::from_rgba(190, 400, pixels)
     }
-    fn pages() -> Vec<Slice> {
+    fn pages() -> Vec<Rectangle<u32>> {
         vec![
-            Slice {
-                y_offset: 0,
-                rectangle: Rectangle {
-                    x: 0,
-                    y: 0,
-                    width: 190,
-                    height: 200,
-                },
+            Rectangle {
+                x: 0,
+                y: 0,
+                width: 190,
+                height: 200,
             },
-            Slice {
-                y_offset: 200,
-                rectangle: Rectangle {
-                    x: 0,
-                    y: 0,
-                    width: 190,
-                    height: 200,
-                },
+            Rectangle {
+                x: 0,
+                y: 200,
+                width: 190,
+                height: 200,
             },
         ]
     }
@@ -366,7 +370,7 @@ mod tests {
         assert!(text.contains("/Width 190"));
         assert!(text.contains("/Height 200"));
         for (page, expected) in pages.into_iter().zip([[255, 0, 0], [0, 0, 255]]) {
-            let compressed = compress_slice(&pixels, page.region()).unwrap();
+            let compressed = compress_slice(&pixels, page).unwrap();
             let mut raw = Vec::new();
             flate2::read::ZlibDecoder::new(compressed.as_slice())
                 .read_to_end(&mut raw)
@@ -387,9 +391,9 @@ mod tests {
         let pixels = raster::load(&source()).unwrap();
         assert!(render(&pixels, &pages()[..1]).is_err());
         let mut invalid = pages();
-        invalid[1].y_offset = 199;
+        invalid[1].y = 199;
         assert!(render(&pixels, &invalid).is_err());
-        invalid[0].rectangle.height = 300;
+        invalid[0].height = 300;
         assert!(render(&pixels, &invalid).is_err());
     }
 
@@ -400,9 +404,12 @@ mod tests {
             orientation: crate::layout::Orientation::Landscape,
             margin: crate::layout::Margin(5),
         };
-        let editor =
-            crate::slices::SliceEditor::prepared(vse_ui::iced::Size::new(190, 400), settings);
-        let pages: Vec<_> = editor.pages().map(|(_, page)| page).collect();
+        let cuts = CutModel::paginated(
+            400,
+            u64::from(settings.height(190)),
+            u64::from(settings.height(190)),
+        );
+        let pages = regions(&cuts, 190);
         let pixels = raster::load(&source()).unwrap();
         let pdf = render_with_settings(&pixels, &pages, settings).unwrap();
         assert!(pdf.starts_with(b"%PDF-"));
@@ -410,7 +417,7 @@ mod tests {
         assert!((layout.width - 595.2756).abs() < 0.001);
         assert!((layout.height - 419.52756).abs() < 0.001);
         for page in pages {
-            assert!(layout.image_transform(page.rectangle.height)[5] >= layout.margin);
+            assert!(layout.image_transform(page.height)[5] >= layout.margin);
         }
     }
 

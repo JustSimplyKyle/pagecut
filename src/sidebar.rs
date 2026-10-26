@@ -1,34 +1,40 @@
-use super::{
-    Message, metrics,
-    slices::{SliceEditor, a4_height},
-};
-use vse_ui::iced::{Fill, Size};
+use super::{Message, metrics};
+use crate::cut_layer::CutModel;
+use vse_ui::iced::{Fill, Rectangle, Size};
 use vse_ui::{Apply, Element, theme, widget};
 
 pub fn pages<'a>(
     allocation: &'a widget::image::Allocation,
-    slices: &SliceEditor,
+    cuts: &CutModel,
+    selected: Option<usize>,
 ) -> Element<'a, Message> {
-    let mut thumbnails = widget::column![].spacing(theme::spacing().space_xxs);
-    for (index, region) in slices.pages() {
-        thumbnails = thumbnails.push(thumbnail(
+    let width = allocation.size().width;
+    let thumbnails = cuts.pages().enumerate().map(|(index, page)| {
+        let fits = page.end - page.start <= cuts.max_length();
+        // Show at most a page of an oversized page, so it doesn't fill the list.
+        let end = page.end.min(page.start + cuts.max_length());
+        let region = Rectangle {
+            x: 0,
+            y: page.start as u32,
+            width,
+            height: (end - page.start) as u32,
+        };
+        thumbnail(
             allocation,
-            Thumbnail::new(index, region.region(), false, slices.selected()),
-        ));
-    }
-    if let Some((index, region)) = slices.pending() {
-        thumbnails = thumbnails.push(thumbnail(
-            allocation,
-            Thumbnail::new(index, region, true, slices.selected()),
-        ));
-    }
+            Thumbnail::new(index, region, fits, selected == Some(index)),
+        )
+    });
+    let count = cuts.pages().count();
     let header = widget::row![
         widget::text::title3("Pages"),
         widget::space().width(Fill),
-        widget::text::caption(slices.count_label()).style(widget::text::secondary)
+        widget::text::caption(format!("{count} pages")).style(widget::text::secondary)
     ]
     .align_y(vse_ui::iced::Alignment::Center);
-    let list = thumbnails.apply(widget::scrollable).height(Fill);
+    let list = widget::column(thumbnails)
+        .spacing(theme::spacing().space_xxs)
+        .apply(widget::scrollable)
+        .height(Fill);
     widget::column![header, list]
         .spacing(theme::spacing().space_xs)
         .apply(widget::container)
@@ -40,37 +46,30 @@ pub fn pages<'a>(
 }
 struct Thumbnail {
     index: usize,
-    region: vse_ui::iced::Rectangle<u32>,
+    region: Rectangle<u32>,
     size: Size,
     label: String,
     status: &'static str,
+    fits: bool,
     active: bool,
 }
 impl Thumbnail {
-    fn new(
-        index: usize,
-        mut region: vse_ui::iced::Rectangle<u32>,
-        pending: bool,
-        selected: usize,
-    ) -> Self {
-        if pending {
-            region.height = region.height.min(a4_height(region.width));
-        }
+    fn new(index: usize, region: Rectangle<u32>, fits: bool, active: bool) -> Self {
         let size = Size::new(
             metrics::THUMB_WIDTH,
             metrics::THUMB_WIDTH * region.height as f32 / region.width.max(1) as f32,
         );
-        let active = index == selected;
         Self {
             index,
             region,
             size,
             label: format!("Page {}", index + 1),
+            fits,
             active,
-            status: if active {
+            status: if !fits {
+                "⚠  Too long — add a cut"
+            } else if active {
                 "○  Editing"
-            } else if pending {
-                "○  Remaining"
             } else {
                 "✓  Ready"
             },
@@ -86,10 +85,13 @@ fn thumbnail(allocation: &widget::image::Allocation, thumbnail: Thumbnail) -> El
         .apply(widget::container)
         .padding(theme::spacing().space_xxs)
         .style(theme::container::secondary);
+    let (active, fits) = (thumbnail.active, thumbnail.fits);
     let labels = widget::column![
         widget::text::body(thumbnail.label),
         widget::text::caption(thumbnail.status).style(move |theme| {
-            if thumbnail.active {
+            if !fits {
+                widget::text::warning(theme)
+            } else if active {
                 theme::text::accent(theme)
             } else {
                 widget::text::secondary(theme)
@@ -97,7 +99,6 @@ fn thumbnail(allocation: &widget::image::Allocation, thumbnail: Thumbnail) -> El
         })
     ]
     .spacing(theme::spacing().space_xxs);
-    let active = thumbnail.active;
     widget::row![image, labels]
         .spacing(theme::spacing().space_xs)
         .align_y(vse_ui::iced::Alignment::Center)

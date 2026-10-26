@@ -1,5 +1,6 @@
-dev:
-    dx serve --platform linux --hot-patch --features hot-patch
+# `just dev` runs the app; `just dev <example>` runs examples/<example>.rs.
+dev example="":
+    dx serve --platform linux --hot-patch --features hot-patch {{ if example == "" { "" } else { "--example " + example } }}
 dev-release:
     dx serve --platform linux --release --hot-patch --features hot-patch
 release:

@@ -12,4 +12,3 @@ pub const GRIP_WIDTH: f32 = 28.0;
 pub const GRIP_HEIGHT: f32 = 12.0;
 pub const GRIP_DOT_RADIUS: f32 = 1.2;
 pub const GRIP_DOT_SPACING: f32 = 6.0;
-pub const LIMIT_DASH: [f32; 2] = [6.0, 4.0];

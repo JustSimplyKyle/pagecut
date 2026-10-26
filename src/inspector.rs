@@ -1,33 +1,52 @@
 //! Cut controls; geometry and page calculations belong to the editor and preview.
-use crate::{Message, blank::CutDetection, metrics, preview, slices::SliceEditor};
+use crate::{Message, blank::CutDetection, cut_layer::CutAction, metrics, preview};
 use vse_ui::{
     Apply, Element,
     iced::{self, Fill},
     theme, widget,
 };
 
+/// The selected cut, by index and position in source pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectedCut {
+    pub index: usize,
+    pub position: u32,
+}
+
 pub fn cut<'a>(
     allocation: &'a widget::image::Allocation,
-    slices: &'a SliceEditor,
+    selected: Option<SelectedCut>,
     detection: &'a CutDetection,
+    summary: String,
 ) -> Element<'a, Message> {
-    let controls = widget::column![
-        cut_preview(allocation, slices),
-        cut_position(slices),
-        widget::text::caption("Up/Down  1 px    Shift  5 px").style(widget::text::secondary),
-        widget::rule::horizontal(1),
-        cut_detection(detection),
-        widget::rule::horizontal(1),
-        cut_actions(slices),
-    ]
-    .spacing(theme::spacing().space_xs)
-    .apply(widget::scrollable)
-    .height(Fill);
+    let controls: Element<'a, Message> = match selected {
+        Some(selected) => widget::column![
+            cut_preview(allocation, selected),
+            cut_position(selected),
+            widget::text::caption("Up/Down  1 px    Shift  5 px").style(widget::text::secondary),
+            widget::rule::horizontal(1),
+            cut_detection(detection),
+            widget::rule::horizontal(1),
+            remove_cut(selected),
+        ]
+        .spacing(theme::spacing().space_xs)
+        .apply(widget::scrollable)
+        .height(Fill)
+        .into(),
+        None => widget::text::body(
+            "Click a cut to adjust it, or click between cuts to add one. \
+             Right-click a cut to remove it.",
+        )
+        .style(widget::text::secondary)
+        .apply(widget::container)
+        .height(Fill)
+        .into(),
+    };
     widget::column![
         widget::text::title3("Adjust cut"),
         controls,
         widget::rule::horizontal(1),
-        widget::text::caption(slices.export_label()).style(widget::text::secondary),
+        widget::text::caption(summary).style(widget::text::secondary),
     ]
     .spacing(theme::spacing().space_s)
     .apply(widget::container)
@@ -38,13 +57,13 @@ pub fn cut<'a>(
     .into()
 }
 
-fn cut_preview<'a>(
-    allocation: &'a widget::image::Allocation,
-    slices: &SliceEditor,
-) -> Element<'a, Message> {
+fn cut_preview(
+    allocation: &widget::image::Allocation,
+    selected: SelectedCut,
+) -> Element<'_, Message> {
     widget::column![
         widget::text::body("Cut preview").style(widget::text::secondary),
-        preview::zoom(allocation, slices)
+        preview::zoom(allocation, selected.index, selected.position)
             .apply(widget::container)
             .height(metrics::DETAIL_HEIGHT)
             .width(Fill),
@@ -56,19 +75,19 @@ fn cut_preview<'a>(
     .into()
 }
 
-fn cut_position(slices: &SliceEditor) -> Element<'_, Message> {
+fn cut_position(selected: SelectedCut) -> Element<'static, Message> {
     let minus = widget::icon!("list-remove-symbolic")
         .apply(widget::button)
         .padding(theme::spacing().space_xxs)
-        .on_press(Message::NudgeGuide(-1));
+        .on_press(Message::NudgeCut(-1));
     let plus = widget::icon!("list-add-symbolic")
         .apply(widget::button)
         .padding(theme::spacing().space_xxs)
-        .on_press(Message::NudgeGuide(1));
+        .on_press(Message::NudgeCut(1));
     widget::row![
         widget::text::body("Cut position"),
         widget::space().width(Fill),
-        widget::text::body(slices.position_label()),
+        widget::text::body(format!("{} px", selected.position)),
         minus,
         plus
     ]
@@ -95,20 +114,11 @@ fn cut_detection(detection: &CutDetection) -> Element<'_, Message> {
     .into()
 }
 
-fn cut_actions(slices: &SliceEditor) -> Element<'static, Message> {
-    let enabled = !slices.is_last_page();
-    let apply = widget::text("Apply cut")
+fn remove_cut(selected: SelectedCut) -> Element<'static, Message> {
+    widget::text("Remove cut")
         .apply(widget::button)
         .padding(theme::spacing().space_xs)
         .width(Fill)
-        .style(theme::button::suggested)
-        .on_press_maybe(enabled.then_some(Message::ConfirmCut));
-    let reset = widget::text("Reset cut")
-        .apply(widget::button)
-        .padding(theme::spacing().space_xs)
-        .width(Fill)
-        .on_press_maybe(enabled.then_some(Message::ResetCut));
-    widget::column![apply, reset]
-        .spacing(theme::spacing().space_xxs)
+        .on_press(Message::Cut(CutAction::Remove(selected.index)))
         .into()
 }
