@@ -445,11 +445,11 @@ mod tests {
             orientation: crate::layout::Orientation::Landscape,
             margin: crate::layout::Margin(5),
         };
-        let cuts = CutModel::paginated(
-            400,
-            u64::from(settings.height(190)),
-            u64::from(settings.height(190)),
-        );
+        let height = u64::from(settings.height(190));
+        let mut cuts = CutModel::new(400, height);
+        for cut in (height..400).step_by(height as usize) {
+            cuts.perform(crate::cut_layer::CutAction::Introduce(cut));
+        }
         let pages = regions(&cuts, 190);
         let pixels = raster::load(&source()).unwrap();
         let pdf = render_with_settings(&pixels, &pages, settings).unwrap();

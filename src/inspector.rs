@@ -20,6 +20,7 @@ pub fn cut<'a>(
     selected: Option<SelectedCut>,
     detection: &'a CutDetection,
     summary: String,
+    next_page: Option<Message>,
     style: impl Fn(&vse_ui::Theme) -> widget::container::Style + 'a,
     compacted: bool,
 ) -> impl Widget<Message> + 'a {
@@ -47,6 +48,8 @@ pub fn cut<'a>(
     };
     widget::column![
         controls,
+        // The compact sheet has its own button beside the tabs.
+        (!compacted).then(|| jump_to_next_page(next_page)),
         widget::rule::horizontal(1),
         widget::text::caption(summary).style(widget::text::secondary),
     ]
@@ -151,6 +154,15 @@ fn cut_detection(detection: &CutDetection) -> impl Widget<Message> + '_ {
         "checks whether all pixels on the line is roughly the same color",
         widget::tooltip::Position::FollowCursor,
     )
+}
+
+fn jump_to_next_page(action: Option<Message>) -> impl Widget<Message> {
+    widget::text("Jump to next page")
+        .apply(widget::button)
+        .padding(theme::spacing().space_xs)
+        .width(Fill)
+        .style(theme::button::suggested)
+        .on_press_maybe(action)
 }
 
 fn remove_cut(selected: SelectedCut) -> impl Widget<Message> {

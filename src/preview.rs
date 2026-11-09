@@ -1,6 +1,6 @@
 use iced::mouse::{Button as MButton, Event as MEvent};
 use vse_ui::iced::Widget;
-use vse_ui::iced::{self, Color, Fill, Point, Rectangle, Size};
+use vse_ui::iced::{self, Fill, Point, Rectangle, Size};
 use vse_ui::{Apply, Element, theme, widget};
 
 use super::{Message, metrics};
@@ -46,6 +46,15 @@ pub fn preview<'a>(
         .center_x(Fill)
         .apply(widget::scrollable)
         .id(SCROLL_ID)
+        // Only the user's own scrolling moves them to another page; jumps
+        // already did.
+        .on_scroll(|scroll| {
+            use widget::scrollable::Source;
+            let viewport = scroll.destination();
+            let middle = viewport.absolute_offset().y + viewport.bounds.height / 2.0;
+            (!matches!(scroll.source, Source::Operation | Source::Action))
+                .then_some(Message::PreviewScrolled(middle))
+        })
         .width(Fill)
         .height(Fill)
         .apply(widget::container)
@@ -235,50 +244,13 @@ impl widget::canvas::Program<Message> for ZoomRule {
         _cursor: iced::mouse::Cursor,
     ) -> Vec<widget::canvas::Geometry> {
         let mut frame = widget::canvas::Frame::new(renderer, bounds.size());
-        draw_rule(
+        cut_layer::draw_cut(
             &mut frame,
             self.y.min(bounds.height - 1.0),
             app_theme.seed().primary,
+            metrics::RULE_WIDTH,
         );
         vec![frame.into_geometry()]
-    }
-}
-
-fn draw_rule(frame: &mut widget::canvas::Frame, y: f32, color: Color) {
-    use widget::canvas::{Path, Stroke};
-    frame.stroke(
-        &Path::line(Point::new(0.0, y), Point::new(frame.width(), y)),
-        Stroke::default()
-            .with_color(color)
-            .with_width(metrics::RULE_WIDTH),
-    );
-    {
-        let center = frame.width() / 2.0;
-        frame.fill_rectangle(
-            Point::new(
-                center - metrics::GRIP_WIDTH / 2.0,
-                y - metrics::GRIP_HEIGHT / 2.0,
-            ),
-            Size::new(metrics::GRIP_WIDTH, metrics::GRIP_HEIGHT),
-            color,
-        );
-        for dx in [-metrics::GRIP_DOT_SPACING, 0.0, metrics::GRIP_DOT_SPACING] {
-            frame.fill(
-                &Path::circle(Point::new(center + dx, y), metrics::GRIP_DOT_RADIUS),
-                theme::color(theme::COSMIC.accent.on),
-            );
-        }
-        frame.fill(
-            &Path::circle(Point::new(metrics::HANDLE_INSET, y), metrics::HANDLE_RADIUS),
-            color,
-        );
-        frame.fill(
-            &Path::circle(
-                Point::new(frame.width() - metrics::HANDLE_INSET, y),
-                metrics::HANDLE_RADIUS,
-            ),
-            color,
-        );
     }
 }
 

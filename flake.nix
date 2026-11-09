@@ -148,7 +148,7 @@
           src = packageSource;
           cargoRoot = "pagecut";
           buildAndTestSubdir = "pagecut";
-          cargoHash = pkgs.lib.fakeHash;
+          cargoHash = "sha256-efIA4pTOvxGkAR7yDNqhudWfPA6MoDRoCOayhH3/4js=";
           nativeBuildInputs = [
             pkgs.pkg-config
             pkgs.makeWrapper

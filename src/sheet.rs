@@ -224,9 +224,27 @@ fn segments<T: Copy + PartialEq + 'static, W: Widget<Message>, const N: usize>(
         .width(Fill)
 }
 
+/// A round "Jump to next page" button beside the tabs, so moving on does not
+/// require dragging the sheet open.
+fn jump_to_next_page(action: Option<Message>) -> impl Widget<Message> {
+    let button = crate::on_accent(widget::icon!("go-down-symbolic"))
+        .apply(widget::button)
+        .padding(theme::spacing().space_xs)
+        .style(theme::button::suggested)
+        .on_press_maybe(action);
+    widget::tooltip(button, "Jump to next page", widget::tooltip::Position::Top)
+}
+
 /// Wraps the active tab's panel under the tab row on the sheet surface.
-pub fn sheet<'a>(active: Tab, content: impl Widget<Message> + 'a) -> impl Widget<Message> + 'a {
-    widget::column![tabs(active), content]
+pub fn sheet<'a>(
+    active: Tab,
+    next_page: Option<Message>,
+    content: impl Widget<Message> + 'a,
+) -> impl Widget<Message> + 'a {
+    let header = widget::row![tabs(active), jump_to_next_page(next_page)]
+        .spacing(theme::spacing().space_xs)
+        .align_y(Vertical::Center);
+    widget::column![header, content]
         .spacing(theme::spacing().space_xxs)
         .apply(widget::container)
         .padding(theme::spacing().space_xs)

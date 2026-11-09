@@ -65,6 +65,8 @@ struct App {
     /// The cut being dragged, so a drag is undone in one step.
     dragging: Option<usize>,
     preview_scale: f32,
+    /// The page the user is on: the one last selected, jumped to or scrolled to.
+    page: usize,
     status: Option<String>,
     opening: bool,
     reading: Option<image_load::ReadProgress>,
@@ -100,6 +102,8 @@ enum Message {
     NudgeCut(i32),
     SelectPage(usize),
     PreviewScale(f32),
+    PreviewScrolled(f32),
+    NextPage,
     PixelsLoaded(u64, Arc<Buffer>),
     CutSettled(u64),
     CutChecked(u64, blank::CutDetection),
@@ -199,6 +203,7 @@ impl App {
                 selected: None,
                 dragging: None,
                 preview_scale: 1.0,
+                page: 0,
                 status: None,
                 opening: false,
                 reading: None,
@@ -395,7 +400,8 @@ impl App {
                 }
                 self.status = None;
                 if self.pixels.is_some() {
-                    self.cuts = Some(Self::paginate(allocation.size(), self.output));
+                    self.cuts = Some(Self::image_as_cut_model(allocation.size(), self.output));
+                    self.page = 0;
                 }
                 self.image = Some(allocation);
                 self.error = None;
@@ -496,11 +502,28 @@ impl App {
                 // A page is selected through the cut at its bottom; the last page has none.
                 self.selected = (index < cuts.cuts().len()).then_some(index);
                 self.dragging = None;
+                self.page = index;
                 self.scroll_to_page(index)
             }
             Message::PreviewScale(scale) => {
                 self.preview_scale = scale;
                 self.scroll_to_selected()
+            }
+            Message::PreviewScrolled(middle) => {
+                // The page in the middle of the view is the one being looked
+                // at, even when the bottom of the page above shows at the top.
+                let cuts = self.cuts.as_ref()?;
+                let middle = (middle / self.preview_scale.max(f32::EPSILON)).round() as u64;
+                self.page = cuts
+                    .pages()
+                    .take_while(|page| page.start <= middle)
+                    .count()
+                    .saturating_sub(1);
+                Task::none()
+            }
+            Message::NextPage => {
+                let index = self.next_page()?;
+                return self.react(Message::SelectPage(index));
             }
             Message::Paper(paper) => {
                 let settings = layout::PageSettings {
@@ -779,22 +802,18 @@ impl App {
         self.remember();
         self.output = settings;
         if let Some(image) = &self.image {
-            self.cuts = Some(Self::paginate(image.size(), settings));
+            self.cuts = Some(Self::image_as_cut_model(image.size(), settings));
+            self.page = 0;
         }
         self.selected = None;
         self.dragging = None;
         self.scroll_to_page(0)
     }
-    /// Cuts every page, a little short of the limit so cuts can be moved down.
-    fn paginate(size: iced::Size<u32>, settings: layout::PageSettings) -> CutModel {
-        const MAX_ADJUSTMENT_RESERVE: u32 = 80;
-        const ADJUSTMENT_RESERVE_FRACTION: u32 = 20;
-        let page_height = settings.height(size.width);
-        let reserve = (page_height / ADJUSTMENT_RESERVE_FRACTION).min(MAX_ADJUSTMENT_RESERVE);
-        CutModel::paginated(
+    /// The whole image as one page; the user places every cut.
+    fn image_as_cut_model(size: iced::Size<u32>, settings: layout::PageSettings) -> CutModel {
+        CutModel::new(
             u64::from(size.height),
-            u64::from(page_height),
-            u64::from((page_height - reserve).max(1)),
+            u64::from(settings.height(size.width)),
         )
     }
     fn zoom_label(&self) -> String {
@@ -828,6 +847,12 @@ impl App {
             .map_or_else(Task::none, |index| self.scroll_to_page(index))
     }
 
+    /// The page after the one the user is on, once a cut ends the current page.
+    fn next_page(&self) -> Option<usize> {
+        let cuts = self.cuts.as_ref()?.cuts();
+        (self.page < cuts.len()).then_some(self.page + 1)
+    }
+
     fn scroll_to_page(&self, index: usize) -> Task<Message> {
         self.cuts
             .as_ref()
@@ -853,6 +878,7 @@ impl App {
                     self.selected_cut(),
                     &self.cut_detection,
                     summary,
+                    self.next_page().map(|_| Message::NextPage),
                     theme::container::card,
                     false
                 )
@@ -871,6 +897,7 @@ impl App {
                     self.selected_cut(),
                     &self.cut_detection,
                     summary,
+                    None,
                     theme::container::navigation,
                     true,
                 )
@@ -878,7 +905,11 @@ impl App {
             };
             widget::bottom_sheet(
                 &self.sheet,
-                sheet::sheet(self.sheet_tab, content),
+                sheet::sheet(
+                    self.sheet_tab,
+                    self.next_page().map(|_| Message::NextPage),
+                    content,
+                ),
                 Self::editor(allocation, cuts, self.zoom, self.fit_width),
             )
             .minimum_height(120.)
@@ -1008,10 +1039,14 @@ mod tests {
 
     fn app() -> App {
         let (mut app, _) = App::new();
-        app.cuts = Some(App::paginate(
-            iced::Size::new(190, 700),
-            layout::PageSettings::default(),
-        ));
+        let mut cuts =
+            App::image_as_cut_model(iced::Size::new(190, 700), layout::PageSettings::default());
+        // A little short of a page, so the cuts can be moved down.
+        let step = cuts.max_length() - 20;
+        for cut in (step..700).step_by(step as usize) {
+            cuts.perform(CutAction::Introduce(cut));
+        }
+        app.cuts = Some(cuts);
         app
     }
 
@@ -1047,6 +1082,31 @@ mod tests {
         assert_eq!(app.undo.len(), 1);
         let _ = app.update(Message::Undo);
         assert_eq!(cuts(&app), original);
+    }
+
+    #[test]
+    fn jumping_to_the_next_page_follows_the_view_and_the_selection() {
+        let mut app = app();
+        let count = app.cuts.as_ref().unwrap().pages().count();
+        assert!(count >= 3);
+        let _ = app.update(Message::NextPage);
+        assert_eq!((app.page, app.selected), (1, Some(1)));
+        // Scrolling back to the top by hand starts over from the first page.
+        let _ = app.update(Message::PreviewScrolled(0.0));
+        let _ = app.update(Message::NextPage);
+        assert_eq!(app.page, 1);
+        // The last page can't scroll to the top of the view, but is still reached.
+        for _ in 1..count {
+            let _ = app.update(Message::NextPage);
+        }
+        assert_eq!((app.page, app.selected), (count - 1, None));
+        assert!(app.next_page().is_none());
+        // Scrolling up so the page above peeks in at the top keeps the last
+        // page, which has no cut yet, so there is still nowhere to jump to.
+        let last = app.cuts.as_ref().unwrap().pages().last().unwrap().start;
+        let _ = app.update(Message::PreviewScrolled(last as f32 + 10.0));
+        assert_eq!(app.page, count - 1);
+        assert!(app.next_page().is_none());
     }
 
     #[test]
