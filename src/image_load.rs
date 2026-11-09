@@ -1,7 +1,13 @@
 //! Chunked reads and image decoding for the native and browser executors.
 use eyre::{Context, Result};
-use std::io::{Seek, SeekFrom};
+use futures::io::{BufReader, Cursor};
+use futures::{AsyncReadExt, AsyncSeekExt, StreamExt, TryStreamExt};
+use pdf_writer::Finish;
+use std::io::SeekFrom;
 use std::sync::Arc;
+use tokio_util::compat::FuturesAsyncReadCompatExt;
+use tokio_util::io::ReaderStream;
+use vse_ui::ApplyConditional;
 use vse_ui::iced::{advanced::graphics::image::Buffer, widget::image::Handle};
 
 const READ_CHUNK: usize = 1024 * 1024;
@@ -34,49 +40,39 @@ impl ReadProgress {
 
 pub async fn read(
     file: loki_file_access::FileAccessToken,
-    progress: impl FnMut(ReadProgress) + Send + 'static,
+    mut progress: impl FnMut(ReadProgress) + Send + 'static,
 ) -> Result<Vec<u8>> {
-    let read = move || {
-        let mut reader = file.open_read().wrap_err("Cannot open image")?;
-        let total = reader.seek(SeekFrom::End(0))?;
-        reader.rewind()?;
-        read_chunks(&mut reader, total, progress)
+    let read = async move || {
+        let mut reader = futures::io::AllowStdIo::new(file.open_read()?);
+        let total = reader.seek(SeekFrom::End(0)).await?;
+        std::io::Seek::rewind(&mut reader)?;
+        let stream = ReaderStream::new(reader.compat());
+        Ok(stream
+            .try_fold(
+                Vec::with_capacity(total as usize),
+                move |mut bytes, chunk| {
+                    bytes.extend_from_slice(&chunk);
+                    progress(ReadProgress {
+                        completed: bytes.len() as u64,
+                        total,
+                    });
+                    std::future::ready(Ok(bytes))
+                },
+            )
+            .await?)
     };
     #[cfg(not(target_arch = "wasm32"))]
     {
-        tokio::task::spawn_blocking(read).await?
+        use futures::executor::block_on;
+        use vse_ui::Apply;
+
+        tokio::task::spawn_blocking(|| read().apply(block_on)).await?
     }
     // The browser picker has already loaded the file into memory.
     #[cfg(target_arch = "wasm32")]
     {
-        read()
+        read().await
     }
-}
-
-fn read_chunks(
-    reader: &mut impl std::io::Read,
-    total: u64,
-    mut progress: impl FnMut(ReadProgress),
-) -> Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    bytes.try_reserve_exact(usize::try_from(total)?)?;
-    let mut chunk = vec![0; READ_CHUNK];
-    progress(ReadProgress {
-        completed: 0,
-        total,
-    });
-    loop {
-        let count = reader.read(&mut chunk).wrap_err("Cannot read image")?;
-        if count == 0 {
-            break;
-        }
-        bytes.extend_from_slice(&chunk[..count]);
-        progress(ReadProgress {
-            completed: bytes.len() as u64,
-            total,
-        });
-    }
-    Ok(bytes)
 }
 
 pub async fn decode(handle: Handle) -> Result<Arc<Buffer>> {
@@ -86,45 +82,4 @@ pub async fn decode(handle: Handle) -> Result<Arc<Buffer>> {
             .map_err(eyre::Report::from)
     })
     .await
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod tests {
-    use super::*;
-    use std::io::Cursor;
-
-    #[test]
-    fn reading_reports_bytes_and_preserves_the_complete_file() {
-        let original = vec![37; READ_CHUNK * 2 + 17];
-        let mut updates = Vec::new();
-        let bytes = read_chunks(
-            &mut Cursor::new(&original),
-            original.len() as u64,
-            |progress| updates.push(progress),
-        )
-        .unwrap();
-        assert_eq!(bytes, original);
-        assert_eq!(updates.first().unwrap().completed, 0);
-        assert_eq!(updates.last().unwrap().completed, original.len() as u64);
-        assert!(
-            updates
-                .windows(2)
-                .all(|pair| pair[0].completed < pair[1].completed)
-        );
-        assert_eq!(updates.last().unwrap().fraction(), 1.0);
-    }
-
-    #[test]
-    fn read_errors_propagate_without_reporting_completion() {
-        struct Failing;
-        impl std::io::Read for Failing {
-            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
-                Err(std::io::Error::other("read failed"))
-            }
-        }
-        let mut updates = Vec::new();
-        assert!(read_chunks(&mut Failing, 8, |progress| updates.push(progress)).is_err());
-        assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].completed, 0);
-    }
 }

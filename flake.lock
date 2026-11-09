@@ -20,17 +20,17 @@
     "cosmic-source": {
       "flake": false,
       "locked": {
-        "lastModified": 1787730577,
-        "narHash": "sha256-C3DTBkAYkgcq6Xtmq8Le2LqlvQ6vv9eqZBR+PTBigK0=",
+        "lastModified": 1791890272,
+        "narHash": "sha256-iII/7BODG7CSdQkX7SuYtc2i4kmSyOFfrrD968dGPo4=",
         "owner": "pop-os",
         "repo": "libcosmic",
-        "rev": "e9d8c30e9490c7badcddb7f2ab6a404e8ecccc4d",
+        "rev": "d3781f9c0bc4bb1c1d3348ae3017f65b89e8b2f2",
         "type": "github"
       },
       "original": {
         "owner": "pop-os",
         "repo": "libcosmic",
-        "rev": "e9d8c30e9490c7badcddb7f2ab6a404e8ecccc4d",
+        "rev": "d3781f9c0bc4bb1c1d3348ae3017f65b89e8b2f2",
         "type": "github"
       }
     },
@@ -95,17 +95,17 @@
     "iced-source": {
       "flake": false,
       "locked": {
-        "lastModified": 1792513072,
-        "narHash": "sha256-VVjU5TOH0Wt9v872tKtOvB7cHyS0XfK/CLujChW5Jxo=",
+        "lastModified": 1794212633,
+        "narHash": "sha256-ZGJM+VIRTRE7EgEyZC7uq56rN+oGMfAziUm2rfYQDj0=",
         "owner": "JustSimplyKyle",
         "repo": "iced",
-        "rev": "c02bd26ad2aa19f9291d418c6a0327df256d2ed0",
+        "rev": "91dadfdd6952ffebf621642b88271d6b4ba78239",
         "type": "github"
       },
       "original": {
         "owner": "JustSimplyKyle",
         "repo": "iced",
-        "rev": "c02bd26ad2aa19f9291d418c6a0327df256d2ed0",
+        "rev": "91dadfdd6952ffebf621642b88271d6b4ba78239",
         "type": "github"
       }
     },
@@ -285,17 +285,17 @@
     "vse-source": {
       "flake": false,
       "locked": {
-        "lastModified": 1792513449,
-        "narHash": "sha256-MCWRU/+e6qeKim5aRPRTCcOP5UhITQclc0xqXsTH9lo=",
+        "lastModified": 1793290631,
+        "narHash": "sha256-WeXi3pRol4tCSVAyT4exr8jTn+FTead0YvR7pBZs3hs=",
         "owner": "JustSimplyKyle",
         "repo": "videosubextract",
-        "rev": "33f10be810829e7f2a9ead38d047f7cf476523e7",
+        "rev": "ce17f5e1a1600890f8d5687e04f7fe599de30a09",
         "type": "github"
       },
       "original": {
         "owner": "JustSimplyKyle",
         "repo": "videosubextract",
-        "rev": "33f10be810829e7f2a9ead38d047f7cf476523e7",
+        "rev": "ce17f5e1a1600890f8d5687e04f7fe599de30a09",
         "type": "github"
       }
     }

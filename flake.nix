@@ -8,15 +8,15 @@
     dioxus.inputs.nixpkgs.follows = "nixpkgs";
     # Pin the sources used by Cargo's neighboring path dependencies.
     iced-source = {
-      url = "github:JustSimplyKyle/iced/c02bd26ad2aa19f9291d418c6a0327df256d2ed0";
+      url = "github:JustSimplyKyle/iced/91dadfdd6952ffebf621642b88271d6b4ba78239";
       flake = false;
     };
     vse-source = {
-      url = "github:JustSimplyKyle/videosubextract/33f10be810829e7f2a9ead38d047f7cf476523e7";
+      url = "github:JustSimplyKyle/videosubextract/ce17f5e1a1600890f8d5687e04f7fe599de30a09";
       flake = false;
     };
     cosmic-source = {
-      url = "github:pop-os/libcosmic/e9d8c30e9490c7badcddb7f2ab6a404e8ecccc4d";
+      url = "github:pop-os/libcosmic/d3781f9c0bc4bb1c1d3348ae3017f65b89e8b2f2";
       flake = false;
     };
     loki-file-access-source = {
@@ -84,6 +84,13 @@
             ./patches/dioxus-cli-wasm-asset-tls.patch
           ];
         });
+        # vse's root manifest is also a package; keep only the workspace that vse-ui inherits from.
+        vseManifest = builtins.fromTOML (builtins.readFile "${vse-source}/Cargo.toml");
+        vseWorkspaceManifest = (pkgs.formats.toml { }).generate "Cargo.toml" {
+          workspace = {
+            inherit (vseManifest.workspace) members resolver dependencies;
+          };
+        };
         # Recreate the path layout without depending on local checkouts.
         packageSource =
           pkgs.runCommand "${cargoToml.package.name}-source"
@@ -104,14 +111,13 @@
                 }
               }/. "$out/pagecut/"
               cp -r ${iced-source} "$out/iced-dioxus"
-              cp ${vse-source}/Cargo.toml "$out/videosubextract/"
+              cp ${vseWorkspaceManifest} "$out/videosubextract/Cargo.toml"
               cp -r ${vse-source}/crates/vse-ui "$out/videosubextract/crates/"
               cp -r ${cosmic-source} "$out/libcosmic"
               chmod -R u+w "$out/libcosmic"
               rm -rf "$out/libcosmic/iced"
               cp -r ${cosmic-iced-source} "$out/libcosmic/iced"
               chmod -R u+w "$out"
-              patch -d "$out/libcosmic" -p1 < ${./patches/cosmic-theme-optional-config.patch}
               cp -r ${loki-file-access-source} "$out/pagecut/crates/loki-file-access"
               chmod -R u+w "$out/pagecut/crates/loki-file-access"
               patch -d "$out/pagecut/crates/loki-file-access" -p1 < ${./patches/loki-file-access-fixes.patch}
@@ -148,7 +154,7 @@
           src = packageSource;
           cargoRoot = "pagecut";
           buildAndTestSubdir = "pagecut";
-          cargoHash = "sha256-efIA4pTOvxGkAR7yDNqhudWfPA6MoDRoCOayhH3/4js=";
+          cargoHash = "sha256-jIzVQrHcdRoILKhosU/jkVY0/IFZFc5EENITjGJtXo8=";
           nativeBuildInputs = [
             pkgs.pkg-config
             pkgs.makeWrapper

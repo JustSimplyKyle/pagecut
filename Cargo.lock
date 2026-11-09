@@ -3108,6 +3108,7 @@ dependencies = [
  "dioxus-cli-config",
  "eyre",
  "flate2",
+ "futures",
  "iced",
  "image",
  "jni 0.21.1",
@@ -3118,6 +3119,7 @@ dependencies = [
  "pdf-writer",
  "tempfile",
  "tokio",
+ "tokio-util",
  "vse-ui",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -4380,6 +4382,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "tokio-util"
+version = "0.7.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e464cf451ba96ebfc6f9b6542f17ee8b8956e33f1e40d9690624e59d7a7f8a4b"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-io",
+ "futures-sink",
+ "pin-project-lite",
+ "tokio",
 ]
 
 [[package]]
